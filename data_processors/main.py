@@ -6,9 +6,9 @@ from geofile_processor import geofile_processor
 
 # Путь к папке с XML файлами и выходному JSON файлу
 metadata_xml_folder_path = '../../../../science/geodata/Metadata/RU'
-json_stationlist_output_path = 'json/station_list.json'
+json_stationlist_output_path = 'json2/station_list_RU.json'
 geofile_input_directory = '../../../science/geodata/SDS/2024/RU'
-geofile_output_directory = 'geo-files'
+geofile_output_directory = 'geo-files_ru'
 
 metadata_xml_exist = os.path.exists(metadata_xml_folder_path)
 json_stationlist_exist = os.path.exists(json_stationlist_output_path)

@@ -10,44 +10,54 @@ from datetime import datetime
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 MODEL_PATH      = os.path.join(_ROOT, "ModelsAndSampleData", "EqT_original_model.h5")
-OUTPUT_BASE_DIR = os.path.join(_ROOT, "data-in-memory", "output_gpu")
+OUTPUT_BASE_DIR = os.path.join(_ROOT, "data-in-memory", "output_gpu_100_150")
 
-MAX_WORKERS = 3
+MAX_WORKERS = 6
 
 _IN = os.path.join(_ROOT, "data-in-memory", "input")
 _JS = os.path.join(_ROOT, "json")
 
+# набор станций, которые находятся в радиусе ~150км от события. 3 станции+ на событие. 
+# 5 событий исключено из каталога (станции далеко)
+
 STATIONS = [
-       # (os.path.join(_IN, "SOC"),  os.path.join(_JS, "station_SOC.json")),
-       # (os.path.join(_IN, "VSLR"), os.path.join(_JS, "station_VSLR.json")),
-       # (os.path.join(_IN, "GUZR"), os.path.join(_JS, "station_GUZR.json")),
-       # (os.path.join(_IN, "BEYR"), os.path.join(_JS, "station_BEYR.json")),
-       # (os.path.join(_IN, "SHA1"), os.path.join(_JS, "station_SHA1.json")),
-       # (os.path.join(_IN, "MRNR"), os.path.join(_JS, "station_MRNR.json")),
-       # (os.path.join(_IN, "SPGR"), os.path.join(_JS, "station_SPGR.json")),
-       # (os.path.join(_IN, "DOMR"), os.path.join(_JS, "station_DOMR.json")),
-       # (os.path.join(_IN, "ZEI"),  os.path.join(_JS, "station_ZEI.json")),
-       # (os.path.join(_IN, "LABN"), os.path.join(_JS, "station_LABN.json")),
-       # (os.path.join(_IN, "GOYR"), os.path.join(_JS, "station_GOYR.json")),
-       # (os.path.join(_IN, "PYA1"), os.path.join(_JS, "station_PYA1.json")),
-        (os.path.join(_IN, "NCK"),  os.path.join(_JS, "station_NCK.json")),
-        (os.path.join(_IN, "SRGR"), os.path.join(_JS, "station_SRGR.json")),
-        (os.path.join(_IN, "GOFR"), os.path.join(_JS, "station_GOFR.json")),
+        #  (os.path.join(_IN, "BEYR"), os.path.join(_JS, "station_BEYR.json")),
+        #  (os.path.join(_IN, "DOMR"), os.path.join(_JS, "station_DOMR.json")),
+        #  (os.path.join(_IN, "GLDR"), os.path.join(_JS, "station_GLDR.json")),
+        #  (os.path.join(_IN, "GOYR"), os.path.join(_JS, "station_GOYR.json")),
+        #  (os.path.join(_IN, "GRYR"), os.path.join(_JS, "station_GRYR.json")),
+        #  (os.path.join(_IN, "GUZR"), os.path.join(_JS, "station_GUZR.json")),
+        #  (os.path.join(_IN, "LABN"), os.path.join(_JS, "station_LABN.json")),
+        #  (os.path.join(_IN, "MRNR"), os.path.join(_JS, "station_MRNR.json")),
+        #  (os.path.join(_IN, "NCK"),  os.path.join(_JS, "station_NCK.json")),
+        #  (os.path.join(_IN, "PYA1"), os.path.join(_JS, "station_PYA1.json")),
+        #  (os.path.join(_IN, "SHA1"), os.path.join(_JS, "station_SHA1.json")),
+        #  (os.path.join(_IN, "SOC"),  os.path.join(_JS, "station_SOC.json")),
+        #  (os.path.join(_IN, "SPGR"), os.path.join(_JS, "station_SPGR.json")),
+        #  (os.path.join(_IN, "SRGR"), os.path.join(_JS, "station_SRGR.json")),
+        #  (os.path.join(_IN, "VSLR"), os.path.join(_JS, "station_VSLR.json")),
+        #  (os.path.join(_IN, "ZEI"),  os.path.join(_JS, "station_ZEI.json")),
+        #  (os.path.join(_IN, "GOFR"), os.path.join(_JS, "station_GOFR.json")),
+        #  (os.path.join(_IN, "NEUR"), os.path.join(_JS, "station_NEUR.json")),
+         (os.path.join(_IN, "LSNR"), os.path.join(_JS, "station_LSNR.json")),
 ]
+
+# BEYR, DOMR, GLDR, GOYR, GRYR, GUZR, LABN, MRNR, NCK, PYA1, SHA1, SOC, SPGR, SRGR, VSLR, ZEI, NEUR, GOFR - обработать в первую очередь (ru регион за месяц)
+# ALER, CEI, DIGR, GALO, KBTC, LSNR, RPOR,  ZRM - добавить (другой регион)
 
 TARGET_MONTH = 1
 TARGET_YEAR  = 2024
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-_model      = None
-_cutter_mod = None
+_model        = None
+_detector_mod = None
 
 
-def _load_cutter():
+def _load_detector():
     spec = importlib.util.spec_from_file_location(
-        "cutter_v5",
-        os.path.join(_ROOT, "legacy", "cutter-v5.py")
+        "detector",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "detector.py")
     )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -56,8 +66,12 @@ def _load_cutter():
 
 def _init_worker(model_path):
     """Запускается один раз при старте воркера. Грузит модель в глобальную переменную."""
-    global _model, _cutter_mod
+    global _model, _detector_mod
+    import sys
     import tensorflow as tf
+
+    if _ROOT not in sys.path:
+        sys.path.insert(0, _ROOT)
 
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
@@ -66,8 +80,8 @@ def _init_worker(model_path):
         except RuntimeError:
             pass
 
-    _cutter_mod = _load_cutter()
-    _model = _cutter_mod.load_model_cudnn_v2(model_path)
+    _detector_mod = _load_detector()
+    _model = _detector_mod.load_model_cudnn_v2(model_path)
     print(f"  [init] модель загружена в воркере PID={os.getpid()}")
 
 
@@ -76,13 +90,12 @@ def run_station(args):
     base_directory, stations_json, target_month, target_year = args
     station_name = os.path.basename(os.path.normpath(base_directory))
     try:
-        _cutter_mod.main_v10(
+        _detector_mod.process_station(
             base_directory=base_directory,
             stations_json=stations_json,
             model=_model,
             target_month=target_month,
             target_year=target_year,
-            create_figures=False,
             output_base_dir=OUTPUT_BASE_DIR,
         )
         return (station_name, "success", "")

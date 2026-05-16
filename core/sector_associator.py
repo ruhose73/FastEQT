@@ -16,9 +16,14 @@ associator_v4.py — секторная ассоциация с объедине
 """
 
 import os
+import sys
 import csv
 import shutil
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from obspy import Catalog
 from obspy import read_events
@@ -26,8 +31,6 @@ from EQTransformer.utils.associator import run_associator_v2
 
 
 # ─── Конфигурация ────────────────────────────────────────────────────────────
-
-_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SOURCE_DIR  = os.path.join(_ROOT, 'data-in-memory', 'output_gpu')
 INPUT_DIR   = os.path.join(_ROOT, 'data-in-memory', 'association_gpu')

@@ -24,8 +24,9 @@ import openpyxl
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-CATALOG_PATH    = os.path.join(_ROOT, "Каталог Сочи 300 км.xlsx")
-DEFAULT_ASSOC   = os.path.join(_ROOT, "data-in-memory", "association_gpu", "sectors", "merged", "associations.xml")
+CATALOG_PATH    = os.path.join(_ROOT, "catalog.xlsx")
+# DEFAULT_ASSOC   = os.path.join(_ROOT, "data-in-memory", "association_gpu", "sectors", "merged", "associations.xml")
+DEFAULT_ASSOC   = os.path.join(_ROOT, "data-in-memory", "association_gpu_100_150", "associations.xml")
 DEFAULT_WINDOW  = 15   # секунды — допуск ПОСЛЕ поправки на travel time
 DEFAULT_VP      = 6.0  # км/с
 DEFAULT_STA_DIR = os.path.join(_ROOT, "json")

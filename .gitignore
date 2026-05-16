@@ -4,6 +4,10 @@
 /EQTransformer/__pycache__
 /EQTransformer/core/__pycache__
 /geo-files
+/json2/
+/geo-files_no
+/geo-files_ru
+/geo-files_da
 /geo-files_processed_hdfs
 /preproc
 /json

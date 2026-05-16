@@ -13,7 +13,6 @@ import gc
 import os
 import csv
 import re
-import concurrent.futures
 from datetime import datetime
 from traceback import format_exc
 
@@ -170,7 +169,7 @@ def geofile_splitter_multi_chanels_v2(base_directory, target_month=1, target_yea
     print(f"✅ Всего сегментов обработано генератором: {total_yielded}")
 
 
-def worker_v3(segment_item, model, save_figs=None, number_of_plots=10):
+def worker_v3(segment_item, model, save_figs=None, number_of_plots=None):
     """
     Вызывает predictor v4, который возвращает строки событий без записи в файл.
     Возвращает: (seg_name, status, message, rows)
@@ -201,16 +200,16 @@ def worker_v3(segment_item, model, save_figs=None, number_of_plots=10):
             hdf_segment=seg_hdf,
             model=model,
             save_figs=save_figs,
-            detection_threshold=0.5,
-            P_threshold=0.2,
-            S_threshold=0.1,
+            detection_threshold=0.7,
+            P_threshold=0.3,
+            S_threshold=0.2,
             number_of_plots=number_of_plots,
             plot_mode='time',
             estimate_uncertainty=False,
             gpuid=0,
-            keepPS=False,
+            keepPS=True,
             allowonlyS=False,
-            spLimit=60
+            spLimit=20
         )
         t_pred = (datetime.now() - t_pred_start).total_seconds()
 
@@ -352,69 +351,36 @@ def process_station(base_directory, stations_json, model,
     )
 
 
-# ─── Параллельный runner ─────────────────────────────────────────────────────
+if __name__ == "__main__":
+    start = datetime.now()
 
-_model = None
+    print(f"Режим:   GPU последовательный")
+    print(f"Станций: {len(STATIONS)}")
+    print("-" * 60)
 
-
-def _init_worker(model_path):
-    """Запускается один раз при старте воркера. Грузит модель в глобальную переменную."""
-    global _model
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
         try:
             tf.config.experimental.set_memory_growth(gpus[0], True)
         except RuntimeError:
             pass
-    _model = load_model_cudnn_v2(model_path)
-    print(f"  [init] модель загружена в воркере PID={os.getpid()}")
 
+    model = load_model_cudnn_v2(MODEL_PATH)
 
-def _run_task(args):
-    """Запускается в воркере: обрабатывает одну станцию используя глобальную модель."""
-    base_directory, stations_json, target_month, target_year = args
-    station_name = os.path.basename(os.path.normpath(base_directory))
-    try:
-        process_station(
-            base_directory, stations_json, _model,
-            target_month, target_year, OUTPUT_BASE_DIR
-        )
-        return (station_name, "success", "")
-    except Exception:
-        import traceback
-        return (station_name, "error", traceback.format_exc())
-
-
-if __name__ == "__main__":
-    start = datetime.now()
-
-    tasks = [
-        (bd, sj, TARGET_MONTH, TARGET_YEAR)
-        for bd, sj in STATIONS
-    ]
-
-    print(f"Станций к обработке: {len(tasks)}")
-    print(f"Воркеров: {MAX_WORKERS}  (MAX_WORKERS=1 → последовательный режим)")
-    print(f"Модель грузится 1 раз на воркер")
-    print("-" * 60)
-
-    results = []
-    with concurrent.futures.ProcessPoolExecutor(
-        max_workers=MAX_WORKERS,
-        initializer=_init_worker,
-        initargs=(MODEL_PATH,)
-    ) as executor:
-        future_map = {executor.submit(_run_task, t): t[0] for t in tasks}
-        for future in concurrent.futures.as_completed(future_map):
-            station_name, status, msg = future.result()
+    ok = err = 0
+    for bd, sj in STATIONS:
+        station_name = os.path.basename(os.path.normpath(bd))
+        try:
+            process_station(bd, sj, model, TARGET_MONTH, TARGET_YEAR, OUTPUT_BASE_DIR)
             elapsed = (datetime.now() - start).total_seconds() / 60
-            print(f"[{elapsed:5.1f} мин] [{status.upper():7}] {station_name}")
-            if msg:
-                print(msg[:800])
-            results.append((station_name, status))
+            print(f"[{elapsed:5.1f} мин] [SUCCESS] {station_name}")
+            ok += 1
+        except Exception:
+            elapsed = (datetime.now() - start).total_seconds() / 60
+            print(f"[{elapsed:5.1f} мин] [ERROR  ] {station_name}")
+            print(format_exc()[:800])
+            err += 1
 
     total = (datetime.now() - start).total_seconds() / 60
-    ok  = sum(1 for _, s in results if s == "success")
-    err = sum(1 for _, s in results if s == "error")
     print("-" * 60)
     print(f"Успешно: {ok}  Ошибок: {err}  Время: {total:.1f} мин")

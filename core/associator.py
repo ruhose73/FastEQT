@@ -1,22 +1,27 @@
 import os
+import sys
 import csv
 import shutil
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-from EQTransformer.utils.associator import run_associator_v2
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
-SOURCE_DIR = os.path.join(_ROOT, 'data-in-memory', 'output_gpu')
-INPUT_DIR  = os.path.join(_ROOT, 'data-in-memory', 'assoc_input_gpu')
-OUTPUT_DIR = os.path.join(_ROOT, 'data-in-memory', 'association_gpu')
+from EQTransformer.utils.associator import run_associator_v2
+
+SOURCE_DIR = os.path.join(_ROOT, 'data-in-memory', 'output_gpu_100_150')
+INPUT_DIR  = os.path.join(_ROOT, 'data-in-memory', 'assoc_input_gpu_100_150')
+OUTPUT_DIR = os.path.join(_ROOT, 'data-in-memory', 'association_gpu_100_150')
 
 # v5-обработанные станции
-STATIONS = ['SOC', 'VSLR', 'GUZR', 'BEYR', 'SHA1', 'MRNR', 'SPGR', 'DOMR', 'ZEI', 'LABN', 'GOYR', 'PYA1']
-
+STATIONS = ['BEYR', 'DOMR', 'GLDR', 'GOYR', 'GRYR', 'GUZR', 'LABN', 'MRNR', 'PYA1', 'SHA1', 'SOC', 'SPGR', 'VSLR', 'ZEI', 'SRGR']
+# 'LSNR', 'GOFR', 'NEUR', 'SRGR', 'NCK' сильно портят результат (+ много шумов без повышения рекала)
+# SRGR добавил +1 событие и 5к шумов
 DET_THR  = 0.7
 P_THR    = 0.3
 S_THR    = 0.2
-KEEP_PS  = True
+KEEP_PS  = False
 
 
 def _passes(row):
@@ -93,7 +98,7 @@ run_associator_v2(
     output_dir=OUTPUT_DIR,
     start_time=start_time,
     end_time=end_time,
-    moving_window=60,
+    moving_window=30,
     consider_combination=False,
     pair_n=3,
 )

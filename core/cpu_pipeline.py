@@ -71,7 +71,11 @@ def _load_detector():
 def _init_worker(model_path, tf_threads):
     """Запускается один раз при старте воркера. Грузит модель в глобальную переменную."""
     global _model, _detector_mod
+    import sys
     import tensorflow as tf
+
+    if _ROOT not in sys.path:
+        sys.path.insert(0, _ROOT)
 
     # Скрываем GPU — только CPU
     tf.config.set_visible_devices([], 'GPU')
