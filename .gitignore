@@ -24,3 +24,5 @@ updates.md
 CLAUDE.MD
 *.xlsx
 data-in-memory
+data_raw
+/data_raw

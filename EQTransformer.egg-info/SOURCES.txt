@@ -11,6 +11,7 @@ EQTransformer/core/EqT_utils.py
 EQTransformer/core/__init__.py
 EQTransformer/core/mseed_predictor.py
 EQTransformer/core/predictor.py
+EQTransformer/core/predictor_mem.py
 EQTransformer/core/tester.py
 EQTransformer/core/trainer.py
 EQTransformer/utils/__init__.py
@@ -18,9 +19,3 @@ EQTransformer/utils/associator.py
 EQTransformer/utils/downloader.py
 EQTransformer/utils/hdf5_maker.py
 EQTransformer/utils/plot.py
-tests/__init__.py
-tests/test_downloader.py
-tests/test_hdf5maker.py
-tests/test_predictor.py
-tests/test_tester.py
-tests/test_trainer.py

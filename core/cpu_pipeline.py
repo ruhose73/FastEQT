@@ -33,23 +33,15 @@ MAX_WORKERS = 4
 # 4 воркера × 3 потока = 12 потоков (все ядра CPU).
 TF_THREADS_PER_WORKER = 3
 
-_IN = os.path.join(_ROOT, "data-in-memory", "input")
+_IN = os.path.join(_ROOT, "geofiles", "data-in-memory", "input")
 _JS = os.path.join(_ROOT, "json")
 
 STATIONS = [
-        # (os.path.join(_IN, "SOC"),  os.path.join(_JS, "station_SOC.json")),
-        # (os.path.join(_IN, "VSLR"), os.path.join(_JS, "station_VSLR.json")),
-        # (os.path.join(_IN, "GUZR"), os.path.join(_JS, "station_GUZR.json")),
-        # (os.path.join(_IN, "BEYR"), os.path.join(_JS, "station_BEYR.json")),
-        # (os.path.join(_IN, "SHA1"), os.path.join(_JS, "station_SHA1.json")),
-        # (os.path.join(_IN, "MRNR"), os.path.join(_JS, "station_MRNR.json")),
-        # (os.path.join(_IN, "SPGR"), os.path.join(_JS, "station_SPGR.json")),
-        # (os.path.join(_IN, "DOMR"), os.path.join(_JS, "station_DOMR.json")),
-        # (os.path.join(_IN, "ZEI"),  os.path.join(_JS, "station_ZEI.json")),
-        # (os.path.join(_IN, "LABN"), os.path.join(_JS, "station_LABN.json")),
+        (os.path.join(_IN, "ANN"),  os.path.join(_JS, "station_ANN.json")),
+        (os.path.join(_IN, "BEYR"), os.path.join(_JS, "station_BEYR.json")),
 ]
 
-TARGET_MONTH = 1
+TARGET_MONTH = 4
 TARGET_YEAR  = 2024
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -106,6 +98,8 @@ def run_station(args):
             date_from=date_from,
             date_to=date_to,
             output_base_dir=OUTPUT_BASE_DIR,
+            estimate_uncertainty=True,
+            number_of_sampling=5,
         )
         return (station_name, "success", "")
     except Exception:

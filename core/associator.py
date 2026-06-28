@@ -10,12 +10,12 @@ if _ROOT not in sys.path:
 
 from EQTransformer.utils.associator import run_associator_v2
 
-SOURCE_DIR = os.path.join(_ROOT, 'data-in-memory', "gpu_splimit_45_may_v2", "output_detector")
-INPUT_DIR  = os.path.join(_ROOT, 'data-in-memory', "gpu_splimit_45_may_v2", "assoc_input")
-OUTPUT_DIR = os.path.join(_ROOT, 'data-in-memory', "gpu_splimit_45_may_v2", "assoc_output_lim_weight_v3")
+SOURCE_DIR = os.path.join(_ROOT, 'data-in-memory', "output_cpu")
+INPUT_DIR  = os.path.join(_ROOT, 'data-in-memory', "assoc_input")
+OUTPUT_DIR = os.path.join(_ROOT, 'data-in-memory', "assoc_output")
 
 # v5-обработанные станции
-STATIONS = ['AKT', 'ANN', 'ARKR', 'ARNR', 'BEYR', 'BTKR', 'BTLR', 'BUJR', 'BVTR', 'DBC', 'DIGR', 'DLMR', 'DOMR', 'DRN', 'DVE', 'ERBR', 'GLDR', 'GLVR', 'GOFR', 'GOYR', 'GROC', 'GRYR', 'GUZR', 'HNZR', 'KANR', 'KLMR', 'KMGR', 'KMKR', 'KORR', 'KRNR', 'KSMR', 'LABN', 'LACR', 'LSNR', 'MAK', 'MRNR', 'NCK', 'NEUR', 'NVPR', 'PXTR', 'PYA1', 'RPOR', 'SGKR', 'SHA1', 'SOC', 'SPGR', 'SRGR', 'STDR', 'SUKR', 'TLTR', 'TMNR', 'TRKR', 'UNCR', 'URKR', 'VLKR', 'VSLR', 'ZEI']
+STATIONS = ['ANN', 'BEYR']
 # STATIONS = ['BEYR', 'DOMR', 'GLDR', 'GOYR', 'GRYR', 'GUZR', 'LABN', 'MRNR',  'PYA1', 'SHA1', 'SOC', 'SPGR', 'VSLR', 'ZEI', 'SRGR', 'DIGR', 'NCK', 'GOFR']
 # 'LSNR', 'GOFR', 'NEUR', 'NCK' сильно портят результат (+ много шумов без повышения рекала)
 DET_THR  = 0.75 # / 0.75

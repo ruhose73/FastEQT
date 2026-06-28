@@ -5,9 +5,9 @@ from metadata_processor import combine_inventories_to_json
 from geofile_processor import geofile_processor
 
 # Путь к папке с XML файлами и выходному JSON файлу
-metadata_xml_folder_path = '../../../../science/geodata/Metadata/RU'
-json_stationlist_output_path = 'json2/station_list_RU.json'
-geofile_input_directory = '../../../science/geodata/SDS/2024/RU'
+metadata_xml_folder_path = 'metadata'
+json_stationlist_output_path = 'json/station_list_RU.json'
+geofile_input_directory = 'data_raw'
 geofile_output_directory = 'geofiles'
 
 metadata_xml_exist = os.path.exists(metadata_xml_folder_path)
@@ -18,7 +18,7 @@ geofile_output_directory_exist = os.path.exists(geofile_output_directory)
 def get_directories(path):
     return [d for d in os.listdir(path) if os.path.isdir(os.path.join(path, d))]
 
-if(metadata_xml_exist & json_stationlist_exist):
+if metadata_xml_exist:
     print("Создание списка станций")
     combine_inventories_to_json(metadata_xml_folder_path, json_stationlist_output_path)
 else:

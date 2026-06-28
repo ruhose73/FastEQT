@@ -37,7 +37,7 @@ setup(
 	'ipykernel==6.* '
 	], 
 
-    python_requires='==3.10.5',
+    python_requires='~=3.10',
 )
 
 
