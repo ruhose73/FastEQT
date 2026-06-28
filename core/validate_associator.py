@@ -25,9 +25,9 @@ import openpyxl
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 CATALOG_PATH    = os.path.join(_ROOT, "catalog.xlsx")
-# DEFAULT_ASSOC   = os.path.join(_ROOT, "data-in-memory", "association_gpu", "sectors", "merged", "associations.xml")
-DEFAULT_ASSOC   = os.path.join(_ROOT, "data-in-memory", "association_gpu_100_150", "associations.xml")
-DEFAULT_WINDOW  = 15   # секунды — допуск ПОСЛЕ поправки на travel time
+DEFAULT_ASSOC   = os.path.join(_ROOT, "data-in-memory", "gpu_splimit_45_may", "assoc_output_lim_v2", "associations_ml1p5.xml")
+DEFAULT_WINDOW  = 30   # секунды — допуск ПОСЛЕ поправки на travel time
+DEFAULT_R_MIN_STA = 30.0  # км — минимальное расстояние до станции для расчёта TT
 DEFAULT_VP      = 6.0  # км/с
 DEFAULT_STA_DIR = os.path.join(_ROOT, "json")
 BED_NS = "http://quakeml.org/xmlns/bed/1.2"
@@ -56,18 +56,23 @@ def load_stations(stations_dir):
     return stations
 
 
-def nearest_station_tt(ev_lat, ev_lon, depth_km, stations, vp):
+def nearest_station_tt(ev_lat, ev_lon, depth_km, stations, vp, r_min_km=0.0):
     """
     Возвращает (station_name, epi_km, tt_sec) для ближайшей станции.
     Учитывает гипоцентральное расстояние (с глубиной).
+    Станции ближе r_min_km игнорируются (исключают неактивные близкие станции).
     """
     best_name, best_epi, best_tt = None, None, None
     for name, st in stations.items():
         epi = haversine_km(ev_lat, ev_lon, st["lat"], st["lon"])
+        if epi < r_min_km:
+            continue
         hypo = math.sqrt(epi ** 2 + depth_km ** 2)
         tt = hypo / vp
         if best_tt is None or tt < best_tt:
             best_name, best_epi, best_tt = name, epi, tt
+    if best_name is None:
+        return None, 0.0, 0.0
     return best_name, round(best_epi, 1), round(best_tt, 1)
 
 
@@ -128,10 +133,10 @@ def load_associations(path):
     return events
 
 
-def validate(catalog, assoc_events, stations, vp, window_sec):
+def validate(catalog, assoc_events, stations, vp, window_sec, r_min_km=0.0):
     """
     Для каждого события каталога:
-      1. Находит ближайшую станцию и вычисляет P-travel time (tt).
+      1. Находит ближайшую станцию (>= r_min_km) и вычисляет P-travel time (tt).
       2. Ожидаемое время ассоциатора = origin_time + tt.
       3. Ищет совпадение в пределах ±window_sec от этого ожидаемого времени.
     """
@@ -144,7 +149,7 @@ def validate(catalog, assoc_events, stations, vp, window_sec):
             cat_t = cat_t.replace(tzinfo=None)
 
         nearest, nearest_epi, tt = nearest_station_tt(
-            ev['lat'], ev['lon'], ev['depth_km'], stations, vp
+            ev['lat'], ev['lon'], ev['depth_km'], stations, vp, r_min_km
         )
         expected_assoc_t = cat_t + timedelta(seconds=tt)
 
@@ -200,19 +205,24 @@ def main():
     parser.add_argument('--assoc',        default=DEFAULT_ASSOC)
     parser.add_argument('--catalog',      default=CATALOG_PATH)
     parser.add_argument('--window',       type=float, default=DEFAULT_WINDOW,
-                        help="Допуск совпадения в сек ПОСЛЕ поправки на TT (default 15)")
+                        help="Допуск совпадения в сек ПОСЛЕ поправки на TT (default 30)")
+    parser.add_argument('--r-min-station', type=float, default=DEFAULT_R_MIN_STA,
+                        help="Минимальное расстояние до станции для расчёта TT, км (default 30.0)")
     parser.add_argument('--vp',           type=float, default=DEFAULT_VP)
     parser.add_argument('--stations-dir', default=DEFAULT_STA_DIR,
                         help="Папка с json/station_*.json файлами")
     parser.add_argument('--year',         type=int,   default=None)
     parser.add_argument('--month',        type=int,   default=None)
     parser.add_argument('--min-mag',      type=float, default=None)
+    parser.add_argument('--min-stations', type=int,   default=None,
+                        help="Минимальное число станций в ассоциации (фильтр по N_sta)")
     args = parser.parse_args()
 
     print(f"Каталог:     {args.catalog}")
     print(f"Ассоциатор:  {args.assoc}")
     print(f"Vp:          {args.vp} км/с")
-    print(f"Окно:        ±{args.window} сек (после поправки на travel time)\n")
+    print(f"Окно:        ±{args.window} сек (после поправки на travel time)")
+    print(f"R_min_sta:   {args.r_min_station} км (станции ближе игнорируются при расчёте TT)\n")
 
     stations = load_stations(args.stations_dir)
     print(f"Загружено станций: {len(stations)}")
@@ -235,9 +245,16 @@ def main():
         print(f"После фильтра Ms >= {args.min_mag}: {len(catalog)} (из {before})")
 
     assoc_events = load_associations(args.assoc)
-    print(f"Ассоциированных событий: {len(assoc_events)}\n")
+    print(f"Ассоциированных событий: {len(assoc_events)}")
 
-    matched, missed = validate(catalog, assoc_events, stations, args.vp, args.window)
+    if args.min_stations is not None:
+        before = len(assoc_events)
+        assoc_events = [e for e in assoc_events if e['n_stations'] >= args.min_stations]
+        print(f"После фильтра N_sta >= {args.min_stations}: {len(assoc_events)} (из {before})")
+    print()
+
+    matched, missed = validate(catalog, assoc_events, stations, args.vp, args.window,
+                               args.r_min_station)
     print_report(matched, missed, args.window)
 
 

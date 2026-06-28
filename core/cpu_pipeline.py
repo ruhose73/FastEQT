@@ -94,12 +94,17 @@ def run_station(args):
     base_directory, stations_json, target_month, target_year = args
     station_name = os.path.basename(os.path.normpath(base_directory))
     try:
-        _detector_mod.process_station(
+        from obspy import UTCDateTime
+        import calendar
+        last_day = calendar.monthrange(target_year, target_month)[1]
+        date_from = UTCDateTime(target_year, target_month, 1)
+        date_to   = UTCDateTime(target_year, target_month, last_day) + 86400
+        _detector_mod.process_station_v3(
             base_directory=base_directory,
             stations_json=stations_json,
             model=_model,
-            target_month=target_month,
-            target_year=target_year,
+            date_from=date_from,
+            date_to=date_to,
             output_base_dir=OUTPUT_BASE_DIR,
         )
         return (station_name, "success", "")

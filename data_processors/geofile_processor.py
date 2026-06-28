@@ -4,9 +4,8 @@ import os
 import shutil
 from datetime import datetime, timedelta
 
-# Задаем месяц и год для фильтрации
-target_month = 1
-target_year = 2024
+date_from = datetime(2024, 4, 1)
+date_to   = datetime(2024, 6, 1)   # не включается
 
 def geofile_processor(subdirectories, base_directory, destination_base_directory):
         # Проходим по каждому подкаталогу
@@ -30,10 +29,10 @@ def geofile_processor(subdirectories, base_directory, destination_base_directory
                             day_of_year = int(day_part)
 
                             # Вычисляем дату на основе номера дня в году
-                            date = datetime(target_year, 1, 1) + timedelta(days=day_of_year - 1)
+                            date = datetime(date_from.year, 1, 1) + timedelta(days=day_of_year - 1)
 
-                            # Проверяем, попадает ли дата в целевой месяц
-                            if date.month == target_month:
+                            # Проверяем, попадает ли дата в диапазон
+                            if date_from <= date < date_to:
                                 # Форматируем даты в нужный формат
                                 start_date_str = date.strftime('%Y%m%dT%H%M%SZ')
                                 end_date_str = (date + timedelta(days=1)).strftime('%Y%m%dT%H%M%SZ')

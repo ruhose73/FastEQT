@@ -3,6 +3,7 @@ import math
 import importlib.util
 import concurrent.futures
 from datetime import datetime
+from obspy import UTCDateTime
 
 
 # ─── Конфигурация ────────────────────────────────────────────────────────────
@@ -10,43 +11,41 @@ from datetime import datetime
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 MODEL_PATH      = os.path.join(_ROOT, "ModelsAndSampleData", "EqT_original_model.h5")
-OUTPUT_BASE_DIR = os.path.join(_ROOT, "data-in-memory", "output_gpu_100_150")
+OUTPUT_BASE_DIR = os.path.join(_ROOT, "data-in-memory", "gpu_splimit_45_may_v2", "output_detector")
 
 MAX_WORKERS = 6
 
-_IN = os.path.join(_ROOT, "data-in-memory", "input")
+_IN = os.path.join(_ROOT, "geofiles")
 _JS = os.path.join(_ROOT, "json")
 
-# набор станций, которые находятся в радиусе ~150км от события. 3 станции+ на событие. 
-# 5 событий исключено из каталога (станции далеко)
+# AKT, ANN, ARKR, ARNR, BEYR, BTKR, BTLR, BUJR, BVTR, DBC, DIGR, DLMR, DOMR, DRN, DVE, ERBR, GLDR, GLVR, VSLR,
+# GOFR, GOYR, GROC, GRYR, GUZR, HNZR, KANR, KLMR, KMGR, KMKR, KORR, KRNR, KSMR, LABN, LACR, LSNR, MAK, MRNR, ZEI
+# NCK, NVPR, PXTR, PYA1, RPOR, SGKR, SHA1, SOC, SPGR, SRGR, STDR, SUKR, TLTR, TMNR, TRKR, UNCR, URKR, VLKR, 
 
 STATIONS = [
-        #  (os.path.join(_IN, "BEYR"), os.path.join(_JS, "station_BEYR.json")),
-        #  (os.path.join(_IN, "DOMR"), os.path.join(_JS, "station_DOMR.json")),
-        #  (os.path.join(_IN, "GLDR"), os.path.join(_JS, "station_GLDR.json")),
-        #  (os.path.join(_IN, "GOYR"), os.path.join(_JS, "station_GOYR.json")),
-        #  (os.path.join(_IN, "GRYR"), os.path.join(_JS, "station_GRYR.json")),
-        #  (os.path.join(_IN, "GUZR"), os.path.join(_JS, "station_GUZR.json")),
-        #  (os.path.join(_IN, "LABN"), os.path.join(_JS, "station_LABN.json")),
-        #  (os.path.join(_IN, "MRNR"), os.path.join(_JS, "station_MRNR.json")),
-        #  (os.path.join(_IN, "NCK"),  os.path.join(_JS, "station_NCK.json")),
-        #  (os.path.join(_IN, "PYA1"), os.path.join(_JS, "station_PYA1.json")),
-        #  (os.path.join(_IN, "SHA1"), os.path.join(_JS, "station_SHA1.json")),
-        #  (os.path.join(_IN, "SOC"),  os.path.join(_JS, "station_SOC.json")),
-        #  (os.path.join(_IN, "SPGR"), os.path.join(_JS, "station_SPGR.json")),
-        #  (os.path.join(_IN, "SRGR"), os.path.join(_JS, "station_SRGR.json")),
-        #  (os.path.join(_IN, "VSLR"), os.path.join(_JS, "station_VSLR.json")),
-        #  (os.path.join(_IN, "ZEI"),  os.path.join(_JS, "station_ZEI.json")),
-        #  (os.path.join(_IN, "GOFR"), os.path.join(_JS, "station_GOFR.json")),
-        #  (os.path.join(_IN, "NEUR"), os.path.join(_JS, "station_NEUR.json")),
-         (os.path.join(_IN, "LSNR"), os.path.join(_JS, "station_LSNR.json")),
-]
+         (os.path.join(_IN, "NCK"), os.path.join(_JS, "station_NCK.json")),
+         (os.path.join(_IN, "NVPR"), os.path.join(_JS, "station_NVPR.json")),
+         (os.path.join(_IN, "PXTR"), os.path.join(_JS, "station_PXTR.json")),
+         (os.path.join(_IN, "PYA1"), os.path.join(_JS, "station_PYA1.json")),
+         (os.path.join(_IN, "RPOR"), os.path.join(_JS, "station_RPOR.json")),
+         (os.path.join(_IN, "SGKR"), os.path.join(_JS, "station_SGKR.json")),
+         (os.path.join(_IN, "SHA1"), os.path.join(_JS, "station_SHA1.json")),
+         (os.path.join(_IN, "SOC"), os.path.join(_JS, "station_SOC.json")),
+         (os.path.join(_IN, "SPGR"), os.path.join(_JS, "station_SPGR.json")),
+         (os.path.join(_IN, "SRGR"), os.path.join(_JS, "station_SRGR.json")),
+         (os.path.join(_IN, "STDR"), os.path.join(_JS, "station_STDR.json")),
+         (os.path.join(_IN, "SUKR"), os.path.join(_JS, "station_SUKR.json")),
+         (os.path.join(_IN, "TLTR"), os.path.join(_JS, "station_TLTR.json")),
+         (os.path.join(_IN, "TMNR"), os.path.join(_JS, "station_TMNR.json")),
+         (os.path.join(_IN, "TRKR"), os.path.join(_JS, "station_TRKR.json")),
+         (os.path.join(_IN, "UNCR"), os.path.join(_JS, "station_UNCR.json")),
+         (os.path.join(_IN, "URKR"), os.path.join(_JS, "station_URKR.json")),
+         (os.path.join(_IN, "VLKR"), os.path.join(_JS, "station_VLKR.json")),
+         # (os.path.join(_IN, "ZEI"), os.path.join(_JS, "station_ZEI.json")),
+    ]
 
-# BEYR, DOMR, GLDR, GOYR, GRYR, GUZR, LABN, MRNR, NCK, PYA1, SHA1, SOC, SPGR, SRGR, VSLR, ZEI, NEUR, GOFR - обработать в первую очередь (ru регион за месяц)
-# ALER, CEI, DIGR, GALO, KBTC, LSNR, RPOR,  ZRM - добавить (другой регион)
-
-TARGET_MONTH = 1
-TARGET_YEAR  = 2024
+DATE_FROM = UTCDateTime(2024, 5, 1)
+DATE_TO   = UTCDateTime(2024, 6, 1)   # не включается
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -87,16 +86,18 @@ def _init_worker(model_path):
 
 def run_station(args):
     """Обрабатывает одну станцию используя уже загруженную модель."""
-    base_directory, stations_json, target_month, target_year = args
+    base_directory, stations_json, date_from, date_to = args
     station_name = os.path.basename(os.path.normpath(base_directory))
     try:
-        _detector_mod.process_station(
+        _detector_mod.process_station_v3(
             base_directory=base_directory,
             stations_json=stations_json,
             model=_model,
-            target_month=target_month,
-            target_year=target_year,
+            date_from=date_from,
+            date_to=date_to,
             output_base_dir=OUTPUT_BASE_DIR,
+            estimate_uncertainty=True,
+            number_of_sampling=5,
         )
         return (station_name, "success", "")
     except Exception:
@@ -112,7 +113,7 @@ if __name__ == "__main__":
     start = datetime.now()
 
     tasks = [
-        (bd, sj, TARGET_MONTH, TARGET_YEAR)
+        (bd, sj, DATE_FROM, DATE_TO)
         for bd, sj in STATIONS
     ]
 

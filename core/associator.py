@@ -10,49 +10,158 @@ if _ROOT not in sys.path:
 
 from EQTransformer.utils.associator import run_associator_v2
 
-SOURCE_DIR = os.path.join(_ROOT, 'data-in-memory', 'output_gpu_100_150')
-INPUT_DIR  = os.path.join(_ROOT, 'data-in-memory', 'assoc_input_gpu_100_150')
-OUTPUT_DIR = os.path.join(_ROOT, 'data-in-memory', 'association_gpu_100_150')
+SOURCE_DIR = os.path.join(_ROOT, 'data-in-memory', "gpu_splimit_45_may_v2", "output_detector")
+INPUT_DIR  = os.path.join(_ROOT, 'data-in-memory', "gpu_splimit_45_may_v2", "assoc_input")
+OUTPUT_DIR = os.path.join(_ROOT, 'data-in-memory', "gpu_splimit_45_may_v2", "assoc_output_lim_weight_v3")
 
 # v5-обработанные станции
-STATIONS = ['BEYR', 'DOMR', 'GLDR', 'GOYR', 'GRYR', 'GUZR', 'LABN', 'MRNR', 'PYA1', 'SHA1', 'SOC', 'SPGR', 'VSLR', 'ZEI', 'SRGR']
-# 'LSNR', 'GOFR', 'NEUR', 'SRGR', 'NCK' сильно портят результат (+ много шумов без повышения рекала)
-# SRGR добавил +1 событие и 5к шумов
-DET_THR  = 0.7
-P_THR    = 0.3
-S_THR    = 0.2
+STATIONS = ['AKT', 'ANN', 'ARKR', 'ARNR', 'BEYR', 'BTKR', 'BTLR', 'BUJR', 'BVTR', 'DBC', 'DIGR', 'DLMR', 'DOMR', 'DRN', 'DVE', 'ERBR', 'GLDR', 'GLVR', 'GOFR', 'GOYR', 'GROC', 'GRYR', 'GUZR', 'HNZR', 'KANR', 'KLMR', 'KMGR', 'KMKR', 'KORR', 'KRNR', 'KSMR', 'LABN', 'LACR', 'LSNR', 'MAK', 'MRNR', 'NCK', 'NEUR', 'NVPR', 'PXTR', 'PYA1', 'RPOR', 'SGKR', 'SHA1', 'SOC', 'SPGR', 'SRGR', 'STDR', 'SUKR', 'TLTR', 'TMNR', 'TRKR', 'UNCR', 'URKR', 'VLKR', 'VSLR', 'ZEI']
+# STATIONS = ['BEYR', 'DOMR', 'GLDR', 'GOYR', 'GRYR', 'GUZR', 'LABN', 'MRNR',  'PYA1', 'SHA1', 'SOC', 'SPGR', 'VSLR', 'ZEI', 'SRGR', 'DIGR', 'NCK', 'GOFR']
+# 'LSNR', 'GOFR', 'NEUR', 'NCK' сильно портят результат (+ много шумов без повышения рекала)
+DET_THR  = 0.75 # / 0.75
+P_THR    = 0.35 # / 0.35
+S_THR    = 0.20 # / 0.20
 KEEP_PS  = False
+
+# SNR ниже порога означает пик, не различимый от шума. 0.0 = фильтр отключён.
+P_SNR_THR = 0.0  # / 8.0
+S_SNR_THR = 0.0 # / 1.25
+
+# Режим учёта неопределённости:
+#   'none'   — uncertainty игнорируется полностью (как до MC Dropout)
+#   'weight' — как в оригинальном EQT: фильтрация по raw prob,
+#              но в staging CSV записываются эффективные вероятности
+#              p_prob * (1 - p_unc) — downstream ассоциатор видит взвешенные значения
+#   'filter' — наш вариант: фильтрация по effective prob = p_prob * (1 - p_unc),
+#              в staging CSV остаются исходные вероятности
+UNCERTAINTY_MODE = 'weight'
+
+
+def _eff_prob(prob, unc_str):
+    """prob * (1 - unc). Если unc отсутствует или вне [0,1] — возвращает prob."""
+    try:
+        u = float(unc_str)
+        if 0.0 <= u <= 1.0:
+            return prob * (1.0 - u)
+    except (ValueError, TypeError):
+        pass
+    return prob
 
 
 def _passes(row):
+    """Фильтр по сырым вероятностям — как в оригинальном EQT.
+    Uncertainty не влияет на прохождение фильтра."""
     try:
         det = float(row.get('detection_probability', 0) or 0)
     except ValueError:
         return False
     if det < DET_THR:
         return False
+
     p_time = row.get('p_arrival_time', '').strip()
-    p_prob_str = row.get('p_probability', '').strip()
     try:
-        p_prob = float(p_prob_str)
+        p_prob = float(row.get('p_probability', '') or 0)
     except ValueError:
         p_prob = 0.0
     has_p = bool(p_time) and p_time.lower() != 'none' and p_prob >= P_THR
 
+    if has_p and P_SNR_THR > 0.0:
+        try:
+            p_snr = float(row.get('p_snr', 0) or 0)
+        except ValueError:
+            p_snr = 0.0
+        if p_snr < P_SNR_THR:
+            has_p = False
+
     s_time = row.get('s_arrival_time', '').strip()
-    s_prob_str = row.get('s_probability', '').strip()
     try:
-        s_prob = float(s_prob_str)
+        s_prob = float(row.get('s_probability', '') or 0)
     except ValueError:
         s_prob = 0.0
     has_s = bool(s_time) and s_time.lower() != 'none' and s_prob >= S_THR
+
+    if has_s and S_SNR_THR > 0.0:
+        try:
+            s_snr = float(row.get('s_snr', 0) or 0)
+        except ValueError:
+            s_snr = 0.0
+        if s_snr < S_SNR_THR:
+            has_s = False
 
     if KEEP_PS:
         return has_p and has_s
     return has_p or has_s
 
 
+def _passes_v2(row):
+    """Фильтр по эффективной вероятности p_prob * (1 - p_unc).
+    Пики с высокой неопределённостью отсеиваются строже."""
+    try:
+        det = float(row.get('detection_probability', 0) or 0)
+    except ValueError:
+        return False
+    if _eff_prob(det, row.get('detection_uncertainty', '')) < DET_THR:
+        return False
+
+    p_time = row.get('p_arrival_time', '').strip()
+    try:
+        p_prob = float(row.get('p_probability', '') or 0)
+    except ValueError:
+        p_prob = 0.0
+    has_p = (bool(p_time) and p_time.lower() != 'none'
+             and _eff_prob(p_prob, row.get('p_uncertainty', '')) >= P_THR)
+
+    if has_p and P_SNR_THR > 0.0:
+        try:
+            p_snr = float(row.get('p_snr', 0) or 0)
+        except ValueError:
+            p_snr = 0.0
+        if p_snr < P_SNR_THR:
+            has_p = False
+
+    s_time = row.get('s_arrival_time', '').strip()
+    try:
+        s_prob = float(row.get('s_probability', '') or 0)
+    except ValueError:
+        s_prob = 0.0
+    has_s = (bool(s_time) and s_time.lower() != 'none'
+             and _eff_prob(s_prob, row.get('s_uncertainty', '')) >= S_THR)
+
+    if has_s and S_SNR_THR > 0.0:
+        try:
+            s_snr = float(row.get('s_snr', 0) or 0)
+        except ValueError:
+            s_snr = 0.0
+        if s_snr < S_SNR_THR:
+            has_s = False
+
+    if KEEP_PS:
+        return has_p and has_s
+    return has_p or has_s
+
+
+def _apply_weight(row):
+    """Возвращает копию row с вероятностями, взвешенными по uncertainty.
+    Используется в режиме 'weight' — downstream ассоциатор видит взвешенные значения."""
+    row = dict(row)
+    for prob_col, unc_col in [('detection_probability', 'detection_uncertainty'),
+                               ('p_probability',         'p_uncertainty'),
+                               ('s_probability',         's_uncertainty')]:
+        try:
+            prob = float(row.get(prob_col, '') or 0)
+        except ValueError:
+            continue
+        eff = _eff_prob(prob, row.get(unc_col, ''))
+        row[prob_col] = round(eff, 4)
+    return row
+
+
 def prepare_station(src, dst):
+    if UNCERTAINTY_MODE == 'filter':
+        filter_fn = _passes_v2
+    else:
+        filter_fn = _passes   # 'none' и 'weight' — фильтр по raw prob
+
     kept = 0
     with open(src, newline='', encoding='utf-8') as fin, \
          open(dst, 'w', newline='', encoding='utf-8') as fout:
@@ -60,9 +169,13 @@ def prepare_station(src, dst):
         writer = csv.DictWriter(fout, fieldnames=reader.fieldnames)
         writer.writeheader()
         for row in reader:
-            if _passes(row):
-                writer.writerow(row)
-                kept += 1
+            if not filter_fn(row):
+                continue
+            if UNCERTAINTY_MODE == 'weight':
+                row = _apply_weight(row)
+            writer.writerow(row)
+            kept += 1
+    print(f"    режим: {UNCERTAINTY_MODE!r}, детекций: {kept}")
     return kept
 
 
@@ -86,8 +199,8 @@ for st in STATIONS:
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-start_time = '2024-01-01 00:00:00.000'
-end_time   = '2024-02-01 00:00:00.000'
+start_time = '2024-05-01 00:00:00.000'
+end_time   = '2024-06-01 00:00:00.000'
 
 # moving_window=60: width of association window in seconds
 # step = moving_window // 2 = 30s (computed inside _dbs_associator_v2)
@@ -98,7 +211,8 @@ run_associator_v2(
     output_dir=OUTPUT_DIR,
     start_time=start_time,
     end_time=end_time,
-    moving_window=30,
+    moving_window=50,
     consider_combination=False,
-    pair_n=3,
+    pair_n=6,
+    coherence_tolerance=3.0,   # 15.0 = старое значение; 2.0-3.0s показывает лучшие значения
 )

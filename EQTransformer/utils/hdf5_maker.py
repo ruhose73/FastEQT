@@ -133,6 +133,128 @@ def preprocessorV6_mem(stream_list, stations_json, overlap=0.3, n_processor=None
 
     return csv_data, hdf5_data
 
+
+def preprocessorV7_mem(stream_list, stations_json, overlap=0.3, n_processor=None,
+                       estimate_uncertainty=False):
+    """
+    v7: правильный ресемплинг вместо np.interp-растяжения массива (v6).
+
+    Изменения по сравнению с v6:
+    - st.resample(100.0) заменяет np.interp: FFT-метод с автоматическим
+      anti-aliasing при даунсемплинге; для апсемплинга 50→100 Hz — zero-padding
+      спектра, плоская АЧХ до исходного Найквиста.
+    - Порядок операций исправлен: taper → resample → filter.
+      В v6 было detrend → filter → taper → (np.interp per window).
+      Фильтр теперь всегда применяется к 100 Hz данным, freqmax=45 Hz валиден
+      для любой входной частоты.
+    - sampling_rate в attrs всегда 100.0 (не берётся из stats, как в v8).
+    - estimate_uncertainty сохраняется в attrs каждой трассы.
+      Внимание: predictor_v4 при estimate_uncertainty=True вызывает model.predict()
+      (training=False) — dropout выключен, std будет ~0. Для реального MC Dropout
+      вызывающий код должен использовать model(X, training=True).
+    """
+    if n_processor is None:
+        import multiprocessing
+        n_processor = max(1, multiprocessing.cpu_count() - 1)
+
+    with open(stations_json, 'r') as f:
+        stations_ = json.load(f)
+
+    csv_data = {}
+    hdf5_data = {}
+
+    def process(item):
+        st, base_name = item
+        output_name = base_name
+        csv_rows = [['trace_name', 'start_time']]
+        hdf_datasets = {}
+
+        try:
+            st.detrend('demean')
+            st.taper(max_percentage=0.001, type='cosine', max_length=2)
+
+            if any(tr.stats.sampling_rate != 100.0 for tr in st):
+                from scipy.signal import resample as sp_resample
+                for tr in st:
+                    if tr.stats.sampling_rate != 100.0:
+                        new_npts = int(round(tr.stats.npts * 100.0 / tr.stats.sampling_rate))
+                        tr.data = sp_resample(tr.data, new_npts)
+                        tr.stats.sampling_rate = 100.0
+
+            st.filter('bandpass', freqmin=1.0, freqmax=45.0, corners=2, zerophase=True)
+
+            start_time = max(tr.stats.starttime for tr in st)
+            end_time = min(tr.stats.endtime for tr in st)
+            st.trim(start_time, end_time, pad=True, fill_value=0)
+
+        except Exception as e:
+            print(f"❌ Ошибка препроцессинга {base_name}: {e}")
+            return
+
+        channel_map = {'Z': 2, 'E': 0, '1': 0, 'N': 1, '2': 1}
+        required_channels = ['E', 'N', 'Z']
+        available_channels = [tr.stats.channel[-1] for tr in st]
+
+        slide = int(60 - overlap * 60)
+        next_slice = start_time + 60
+
+        while next_slice <= end_time:
+            w = st.slice(start_time, next_slice)
+            npz_data = np.zeros([6000, 3], dtype=np.float32)
+
+            for tr in w:
+                ch = tr.stats.channel[-1]
+                if ch in channel_map:
+                    col = channel_map[ch]
+                    data = tr.data
+                    if len(data) > 6000:
+                        data = data[:6000]
+                    elif len(data) < 6000:
+                        # Ошибка округления после ресемплинга или пробел в данных
+                        tmp = np.zeros(6000, dtype=data.dtype)
+                        tmp[:len(data)] = data
+                        data = tmp
+                    npz_data[:, col] = data
+
+            for req_ch in required_channels:
+                if req_ch not in available_channels:
+                    npz_data[:, channel_map[req_ch]] = 0.0
+
+            tr_name = (
+                f"{st[0].stats.station}_{st[0].stats.network}"
+                f"_{st[0].stats.channel[:2]}_{str(start_time)}"
+            )
+
+            hdf_datasets[tr_name] = {
+                'data': npz_data,
+                'attrs': {
+                    "trace_name":           tr_name,
+                    "receiver_code":        st[0].stats.station,
+                    "network_code":         stations_[st[0].stats.station]['network'],
+                    "receiver_latitude":    stations_[st[0].stats.station]['coords'][0],
+                    "receiver_longitude":   stations_[st[0].stats.station]['coords'][1],
+                    "receiver_elevation_m": stations_[st[0].stats.station]['coords'][2],
+                    "trace_start_time":     str(start_time).replace('T', ' ').replace('Z', ''),
+                    "sampling_rate":        100.0,
+                    "estimate_uncertainty": estimate_uncertainty,
+                }
+            }
+
+            csv_rows.append([tr_name, str(start_time)])
+            start_time += slide
+            next_slice += slide
+
+        csv_data[output_name] = csv_rows
+        hdf5_data[output_name] = hdf_datasets
+        print(f"✅ {output_name}: обработано {len(hdf_datasets)} окон (каналов: {len(st)})")
+
+    from multiprocessing.dummy import Pool as ThreadPool
+    with ThreadPool(n_processor) as pool:
+        pool.map(process, stream_list)
+
+    return csv_data, hdf5_data
+
+
 def preprocessorV5_mem(stream_list, stations_json, overlap=0.3, n_processor=None):
     """
     Препроцессинг сегментов в памяти с сохранением частоты и точных временных меток.

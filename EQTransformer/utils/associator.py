@@ -724,7 +724,7 @@ def _dbs_associator(start_time, end_time, moving_window,
 
 def run_associator_v2(input_dir, start_time, end_time,
                       moving_window=60, pair_n=3, output_dir='.',
-                      consider_combination=False):
+                      consider_combination=False, coherence_tolerance=15.0):
     """
     v2 of run_associator.
     Groups detections by p_arrival_time (not event_start_time) and uses a
@@ -762,7 +762,8 @@ def run_associator_v2(input_dir, start_time, end_time,
     tbl['s_arrival_time']   = tbl['s_arrival_time'].apply(_date_convertor)
 
     _dbs_associator_v2(start_time, end_time, moving_window, tbl, pair_n,
-                       output_dir, station_list, consider_combination)
+                       output_dir, station_list, consider_combination,
+                       coherence_tolerance=coherence_tolerance)
 
 
 def _coherent_subset(detections, pair_n, vp=6.0, tolerance=15.0):
@@ -825,7 +826,7 @@ def _coherent_subset(detections, pair_n, vp=6.0, tolerance=15.0):
 
 def _dbs_associator_v2(start_time, end_time, moving_window,
                        tbl, pair_n, save_dir, station_list,
-                       consider_combination=False):
+                       consider_combination=False, coherence_tolerance=15.0):
     """
     Sliding-window associator that groups by p_arrival_time.
 
@@ -920,7 +921,7 @@ def _dbs_associator_v2(start_time, end_time, moving_window,
     before_total_sta = sum(len(d) for _, d in deduped)
     filtered = []
     for ev_t, det in deduped:
-        coherent = _coherent_subset(det, pair_n, vp=6.0, tolerance=15.0)
+        coherent = _coherent_subset(det, pair_n, vp=6.0, tolerance=coherence_tolerance)
         if coherent is not None:
             filtered.append((ev_t, coherent))
     deduped = filtered

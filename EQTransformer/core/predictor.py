@@ -1099,6 +1099,172 @@ def predictor_mem_non_hdf_load_model_v5(csv_segment, hdf_segment,
     return all_rows
 
 
+@tf.function
+def _mc_forward(model, batch):
+    return model(batch, training=True)
+
+
+def predictor_mem_non_hdf_load_model_v6(csv_segment, hdf_segment,
+                                         model_path=None,
+                                         model=None,
+                                         save_figs=None,
+                                         detection_threshold=0.3,
+                                         P_threshold=0.1,
+                                         S_threshold=0.1,
+                                         number_of_plots=10,
+                                         plot_mode='time',
+                                         estimate_uncertainty=False,
+                                         number_of_sampling=10,
+                                         batch_size=32,
+                                         gpuid=None,
+                                         keepPS=True,
+                                         allowonlyS=True,
+                                         spLimit=60):
+    """
+    v6: реальный MC Dropout при estimate_uncertainty=True.
+
+    v4/v5 использовали model.predict() в цикле — это training=False, dropout
+    выключен, предсказания детерминированы, std всегда ~0.
+
+    v6 при estimate_uncertainty=True использует model(X_batch, training=True):
+    dropout активен на каждом forward pass → разные маски → ненулевой std.
+    number_of_sampling проходов дают распределение вероятностей P и S,
+    из которого вычисляются mean и std.
+
+    При estimate_uncertainty=False поведение идентично v5 (model.predict()).
+    Нормализация: X / std без вычитания среднего (как в оригинальном EQT).
+    """
+    if gpuid is not None:
+        os.environ['CUDA_VISIBLE_DEVICES'] = str(gpuid)
+        gpus = tf.config.list_physical_devices('GPU')
+        if gpus:
+            try:
+                tf.config.experimental.set_memory_growth(gpus[0], True)
+            except (RuntimeError, ValueError):
+                pass
+
+    if save_figs is not None and number_of_plots > 0:
+        os.makedirs(save_figs, exist_ok=True)
+
+    if model is None:
+        model = load_model(
+            model_path,
+            compile=False,
+            custom_objects={
+                'SeqSelfAttention': SeqSelfAttention,
+                'FeedForward': FeedForward,
+                'LayerNormalization': LayerNormalization,
+                'f1': f1
+            }
+        )
+        model.compile(
+            optimizer=Adam(learning_rate=0.001),
+            loss=['binary_crossentropy'] * 3,
+            metrics=[f1]
+        )
+
+    args = {
+        'input_hdf5': 'in-memory',
+        'input_dimention': (6000, 3),
+        'normalization_mode': 'std',
+        'use_multiprocessing': False,
+        'number_of_cpus': 1,
+        'estimate_uncertainty': estimate_uncertainty,
+        'number_of_sampling': number_of_sampling,
+        'output_probabilities': False,
+        'number_of_plots': number_of_plots,
+        'detection_threshold': detection_threshold,
+        'P_threshold': P_threshold,
+        'S_threshold': S_threshold,
+        'plot_mode': plot_mode
+    }
+
+    id_list = [row[0] for row in csv_segment if row[0] in hdf_segment]
+    if not id_list:
+        return []
+
+    X = np.stack([hdf_segment[ID]['data'] for ID in id_list], axis=0)  # (N, 6000, 3)
+
+    std = X.std(axis=1, keepdims=True)
+    std[std == 0] = 1
+    X_norm = X / std
+
+    if estimate_uncertainty:
+        # MC Dropout батчинг: n_samples копий X складываются в один батч.
+        # Dropout генерирует независимые маски для каждого сэмпла в батче,
+        # поэтому n_samples копий одного окна дают n_samples разных выходов —
+        # валидный MC Dropout за один forward pass вместо n_samples вызовов.
+        N = len(X_norm)
+        X_tiled = np.tile(X_norm, (number_of_sampling, 1, 1))  # (n*N, 6000, 3)
+        X_tf = tf.constant(X_tiled, dtype=tf.float32)
+
+        batch_D, batch_P, batch_S = [], [], []
+        for i in range(0, len(X_tf), batch_size):
+            out = _mc_forward(model, X_tf[i:i + batch_size])
+            batch_D.append(out[0].numpy())
+            batch_P.append(out[1].numpy())
+            batch_S.append(out[2].numpy())
+
+        all_D = np.concatenate(batch_D, axis=0).squeeze(-1)  # (n*N, 6000)
+        all_P = np.concatenate(batch_P, axis=0).squeeze(-1)
+        all_S = np.concatenate(batch_S, axis=0).squeeze(-1)
+
+        all_D = all_D.reshape(number_of_sampling, N, 6000)
+        all_P = all_P.reshape(number_of_sampling, N, 6000)
+        all_S = all_S.reshape(number_of_sampling, N, 6000)
+
+        DD_mean = all_D.mean(axis=0)   # (N, 6000)
+        PP_mean = all_P.mean(axis=0)
+        SS_mean = all_S.mean(axis=0)
+        DD_std  = all_D.std(axis=0)
+        PP_std  = all_P.std(axis=0)
+        SS_std  = all_S.std(axis=0)
+    else:
+        pD, pP, pS = model.predict(X_norm, batch_size=batch_size, verbose=0)
+        DD_mean = pD.squeeze(-1)
+        PP_mean = pP.squeeze(-1)
+        SS_mean = pS.squeeze(-1)
+        DD_std  = np.zeros_like(DD_mean)
+        PP_std  = np.zeros_like(PP_mean)
+        SS_std  = np.zeros_like(SS_mean)
+
+    detection_memory = []
+    plt_n = 0
+    all_rows = []
+
+    class InMemoryDataset:
+        def __init__(self, data_dict):
+            self.data = data_dict['data']
+            self.attrs = data_dict['attrs']
+
+    for i, ID in enumerate(tqdm(id_list, desc="Writing results")):
+        dataset_obj = InMemoryDataset(hdf_segment[ID])
+        prob_dic = {
+            'DD_mean': DD_mean[i:i+1],
+            'PP_mean': PP_mean[i:i+1],
+            'SS_mean': SS_mean[i:i+1],
+            'DD_std':  DD_std[i:i+1],
+            'PP_std':  PP_std[i:i+1],
+            'SS_std':  SS_std[i:i+1],
+        }
+        plt_n, detection_memory, rows = _gen_writer_mem_non_hdf_v10(
+            [ID], args, prob_dic, {ID: dataset_obj},
+            save_figs=save_figs,
+            plt_n=plt_n,
+            detection_memory=detection_memory,
+            keepPS=keepPS,
+            allowonlyS=allowonlyS,
+            spLimit=spLimit
+        )
+        all_rows.extend(rows)
+
+    del X, X_norm, DD_mean, PP_mean, SS_mean, DD_std, PP_std, SS_std
+    if estimate_uncertainty:
+        del X_tiled, X_tf, all_D, all_P, all_S
+
+    return all_rows
+
+
 def predictor_mem_v7(csv_segment, hdf_segment,
                      model_path,
                      output_dir=None,
