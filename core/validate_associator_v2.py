@@ -37,9 +37,8 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 CATALOG_PATH   = os.path.join(_ROOT, "catalog.xlsx")
 DEFAULT_ASSOC  = os.path.join(
-    _ROOT, "data-in-memory", "gpu_splimit_45_may_v2",
-    "assoc_output_lim_weight_v2", "associations_ml1p5.xml")
-DEFAULT_AMPS   = os.path.join(_ROOT, "amps_wa_v3_weight_v2.csv")
+    _ROOT, "memory-25", "assoc_output_cpu_2", "associations_ml1p5.xml")
+DEFAULT_AMPS   = os.path.join(_ROOT, "amps_wa_ml_v2_15.csv")
 DEFAULT_WINDOW = 60       # сек — допуск сравнения с каталогом
 DEFAULT_VP     = 6.0      # км/с
 DEFAULT_VS     = 3.4883   # км/с

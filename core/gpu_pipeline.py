@@ -1,12 +1,32 @@
+"""
+gpu_pipeline.py — параллельная обработка станций на GPU (CLI).
+
+Несколько процессов используют один GPU (initializer-паттерн: модель
+грузится один раз на процесс, memory_growth включён чтобы процессы могли
+делить VRAM).
+
+Все параметры теперь задаются флагами командной строки (см. --help);
+значения по умолчанию соответствуют прежним хардкод-константам.
+
+Правки этой ревизии (production-plan.md, Трек 1, п.1.1/1.3, 2026-09-06),
+внесены как новый файл (предыдущая версия — legacy/gpu_pipeline.py):
+  - удалена get_threads_to_use() (мёртвый код, дублировала core/threads.py,
+    нигде не вызывалась);
+  - список станций — не список кортежей в коде, а флаг --stations
+    (коды через запятую), путь достраивается из --input-dir/--json-dir;
+  - date_from/date_to, estimate_uncertainty/number_of_sampling (были
+    захардкожены True/5 в run_station) и пороги детекции, поднятые в
+    detector.py до параметров process_station_v3, теперь CLI-флаги.
+"""
+
+import argparse
 import os
-import math
 import importlib.util
 import concurrent.futures
 from datetime import datetime
-from obspy import UTCDateTime
 
 
-# ─── Конфигурация ────────────────────────────────────────────────────────────
+# ─── Конфигурация (значения по умолчанию для CLI-флагов) ─────────────────────
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -18,34 +38,22 @@ MAX_WORKERS = 6
 _IN = os.path.join(_ROOT, "geofiles")
 _JS = os.path.join(_ROOT, "json")
 
-# AKT, ANN, ARKR, ARNR, BEYR, BTKR, BTLR, BUJR, BVTR, DBC, DIGR, DLMR, DOMR, DRN, DVE, ERBR, GLDR, GLVR, VSLR,
-# GOFR, GOYR, GROC, GRYR, GUZR, HNZR, KANR, KLMR, KMGR, KMKR, KORR, KRNR, KSMR, LABN, LACR, LSNR, MAK, MRNR, ZEI
-# NCK, NVPR, PXTR, PYA1, RPOR, SGKR, SHA1, SOC, SPGR, SRGR, STDR, SUKR, TLTR, TMNR, TRKR, UNCR, URKR, VLKR, 
+STATIONS = ("NCK,NVPR,PXTR,PYA1,RPOR,SGKR,SHA1,SOC,SPGR,SRGR,"
+            "STDR,SUKR,TLTR,TMNR,TRKR,UNCR,URKR,VLKR")
 
-STATIONS = [
-         (os.path.join(_IN, "NCK"), os.path.join(_JS, "station_NCK.json")),
-         (os.path.join(_IN, "NVPR"), os.path.join(_JS, "station_NVPR.json")),
-         (os.path.join(_IN, "PXTR"), os.path.join(_JS, "station_PXTR.json")),
-         (os.path.join(_IN, "PYA1"), os.path.join(_JS, "station_PYA1.json")),
-         (os.path.join(_IN, "RPOR"), os.path.join(_JS, "station_RPOR.json")),
-         (os.path.join(_IN, "SGKR"), os.path.join(_JS, "station_SGKR.json")),
-         (os.path.join(_IN, "SHA1"), os.path.join(_JS, "station_SHA1.json")),
-         (os.path.join(_IN, "SOC"), os.path.join(_JS, "station_SOC.json")),
-         (os.path.join(_IN, "SPGR"), os.path.join(_JS, "station_SPGR.json")),
-         (os.path.join(_IN, "SRGR"), os.path.join(_JS, "station_SRGR.json")),
-         (os.path.join(_IN, "STDR"), os.path.join(_JS, "station_STDR.json")),
-         (os.path.join(_IN, "SUKR"), os.path.join(_JS, "station_SUKR.json")),
-         (os.path.join(_IN, "TLTR"), os.path.join(_JS, "station_TLTR.json")),
-         (os.path.join(_IN, "TMNR"), os.path.join(_JS, "station_TMNR.json")),
-         (os.path.join(_IN, "TRKR"), os.path.join(_JS, "station_TRKR.json")),
-         (os.path.join(_IN, "UNCR"), os.path.join(_JS, "station_UNCR.json")),
-         (os.path.join(_IN, "URKR"), os.path.join(_JS, "station_URKR.json")),
-         (os.path.join(_IN, "VLKR"), os.path.join(_JS, "station_VLKR.json")),
-         # (os.path.join(_IN, "ZEI"), os.path.join(_JS, "station_ZEI.json")),
-    ]
+DATE_FROM = "2024-05-01"
+DATE_TO   = "2024-06-01"   # не включается
 
-DATE_FROM = UTCDateTime(2024, 5, 1)
-DATE_TO   = UTCDateTime(2024, 6, 1)   # не включается
+ESTIMATE_UNCERTAINTY = True
+NUMBER_OF_SAMPLING   = 5
+
+DETECTION_THRESHOLD = 0.75
+P_THRESHOLD         = 0.3
+S_THRESHOLD         = 0.2
+KEEP_PS             = True
+ALLOW_ONLY_S        = False
+SP_LIMIT            = 45
+BATCH_SIZE          = 32
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -86,7 +94,8 @@ def _init_worker(model_path):
 
 def run_station(args):
     """Обрабатывает одну станцию используя уже загруженную модель."""
-    base_directory, stations_json, date_from, date_to = args
+    (base_directory, stations_json, date_from, date_to, output_base_dir,
+     thresholds) = args
     station_name = os.path.basename(os.path.normpath(base_directory))
     try:
         _detector_mod.process_station_v3(
@@ -95,9 +104,8 @@ def run_station(args):
             model=_model,
             date_from=date_from,
             date_to=date_to,
-            output_base_dir=OUTPUT_BASE_DIR,
-            estimate_uncertainty=True,
-            number_of_sampling=5,
+            output_base_dir=output_base_dir,
+            **thresholds,
         )
         return (station_name, "success", "")
     except Exception:
@@ -105,29 +113,87 @@ def run_station(args):
         return (station_name, "error", traceback.format_exc())
 
 
-def get_threads_to_use(percent):
-    return math.ceil(os.cpu_count() * percent / 100)
+def _build_stations(codes, input_dir, json_dir):
+    """Достраивает пары (входная_директория, station_*.json) по кодам станций."""
+    return [
+        (os.path.join(input_dir, code), os.path.join(json_dir, f"station_{code}.json"))
+        for code in codes
+    ]
+
+
+def _parse_args():
+    parser = argparse.ArgumentParser(
+        description="Параллельная обработка станций EQTransformer на GPU "
+                    "(process_station_v3 из detector.py, ProcessPoolExecutor)."
+    )
+    parser.add_argument('--model-path', default=MODEL_PATH)
+    parser.add_argument('--output-base-dir', default=OUTPUT_BASE_DIR)
+    parser.add_argument('--max-workers', type=int, default=MAX_WORKERS)
+    parser.add_argument('--input-dir', default=_IN,
+                        help="Корневая директория с входными данными станций ({input-dir}/{код})")
+    parser.add_argument('--json-dir', default=_JS,
+                        help="Директория с station_*.json ({json-dir}/station_{код}.json)")
+    parser.add_argument('--stations', default=STATIONS,
+                        help="Коды станций через запятую")
+    parser.add_argument('--date-from', default=DATE_FROM, help="UTCDateTime-совместимая строка")
+    parser.add_argument('--date-to', default=DATE_TO, help="Не включается")
+    parser.add_argument('--estimate-uncertainty', dest='estimate_uncertainty',
+                        action='store_true', default=ESTIMATE_UNCERTAINTY,
+                        help="MC Dropout неопределённость (по умолчанию включена)")
+    parser.add_argument('--no-estimate-uncertainty', dest='estimate_uncertainty',
+                        action='store_false')
+    parser.add_argument('--number-of-sampling', type=int, default=NUMBER_OF_SAMPLING)
+    parser.add_argument('--detection-threshold', type=float, default=DETECTION_THRESHOLD)
+    parser.add_argument('--p-threshold', type=float, default=P_THRESHOLD)
+    parser.add_argument('--s-threshold', type=float, default=S_THRESHOLD)
+    parser.add_argument('--keep-ps', dest='keep_ps', action='store_true', default=KEEP_PS)
+    parser.add_argument('--no-keep-ps', dest='keep_ps', action='store_false')
+    parser.add_argument('--allow-only-s', action='store_true', default=ALLOW_ONLY_S)
+    parser.add_argument('--sp-limit', type=float, default=SP_LIMIT)
+    parser.add_argument('--batch-size', type=int, default=BATCH_SIZE)
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
+    from obspy import UTCDateTime
+
+    args = _parse_args()
     start = datetime.now()
 
+    date_from = UTCDateTime(args.date_from)
+    date_to   = UTCDateTime(args.date_to)
+
+    station_codes = [s.strip() for s in args.stations.split(',') if s.strip()]
+    stations = _build_stations(station_codes, args.input_dir, args.json_dir)
+
+    thresholds = dict(
+        detection_threshold=args.detection_threshold,
+        P_threshold=args.p_threshold,
+        S_threshold=args.s_threshold,
+        keep_ps=args.keep_ps,
+        allow_only_s=args.allow_only_s,
+        sp_limit=args.sp_limit,
+        estimate_uncertainty=args.estimate_uncertainty,
+        number_of_sampling=args.number_of_sampling,
+        batch_size=args.batch_size,
+    )
+
     tasks = [
-        (bd, sj, DATE_FROM, DATE_TO)
-        for bd, sj in STATIONS
+        (bd, sj, date_from, date_to, args.output_base_dir, thresholds)
+        for bd, sj in stations
     ]
 
     print(f"Станций к обработке: {len(tasks)}")
-    print(f"Воркеров (GPU процессов): {MAX_WORKERS}")
+    print(f"Воркеров (GPU процессов): {args.max_workers}")
     print(f"CPU потоков всего: {os.cpu_count()}")
     print(f"Модель грузится 1 раз на воркер (initializer)")
     print("-" * 60)
 
     results = []
     with concurrent.futures.ProcessPoolExecutor(
-        max_workers=MAX_WORKERS,
+        max_workers=args.max_workers,
         initializer=_init_worker,
-        initargs=(MODEL_PATH,)
+        initargs=(args.model_path,)
     ) as executor:
         future_map = {executor.submit(run_station, t): t[0] for t in tasks}
         for future in concurrent.futures.as_completed(future_map):
@@ -143,5 +209,5 @@ if __name__ == "__main__":
     err = sum(1 for _, s in results if s == "error")
     print("-" * 60)
     print(f"Всего CPU потоков: {os.cpu_count()}")
-    print(f"Использовалось воркеров: {MAX_WORKERS}")
+    print(f"Использовалось воркеров: {args.max_workers}")
     print(f"Успешно: {ok}  Ошибок: {err}  Время: {total:.1f} мин")

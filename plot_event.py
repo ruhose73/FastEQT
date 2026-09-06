@@ -5,6 +5,13 @@
 Выход: data-in-memory/output_event/{STATION}/
   - X_prediction_results.csv
   - figures/  (до 10 графиков EQTransformer на станцию)
+
+Обновлено (2026-09-06, production-plan.md, Трек 1) — старая V6-цепочка
+(geofile_splitter_multi_chanels_v2/preproc_sequential_v4) удалена из
+core/detector.py как небезопасная (см. detector.py); этот скрипт переведён
+на geofile_splitter_multi_chanels_v3/preproc_sequential_v5 (та же V7-цепочка,
+что использует прод). Поведение по существу не изменилось — только более
+корректный ресемплинг внутри preprocessorV7_mem.
 """
 
 import os
@@ -24,8 +31,8 @@ OUT_BASE   = os.path.join(ROOT, 'data-in-memory', 'output_event')
 sys.path.insert(0, ROOT)
 from core.detector import (
     load_model_cudnn_v2,
-    geofile_splitter_multi_chanels_v2,
-    preproc_sequential_v4,
+    geofile_splitter_multi_chanels_v3,
+    preproc_sequential_v5,
 )
 
 # ── Параметры события ─────────────────────────────────────────────────────────
@@ -33,6 +40,10 @@ from core.detector import (
 TARGET_YEAR  = 2024
 TARGET_MONTH = 1
 TARGET_DAY   = 28
+
+# Диапазон суток для geofile_splitter_multi_chanels_v3 (правая граница не включена).
+DAY_FROM = UTCDateTime(TARGET_YEAR, TARGET_MONTH, TARGET_DAY)
+DAY_TO   = DAY_FROM + 86400
 
 # Временно́е окно захвата: захватываем оба 10-минутных сегмента,
 # перекрывающих событие (16:00–16:10 и 16:05–16:15)
@@ -61,8 +72,8 @@ STATIONS = [
 
 def _filtered_gen(base_dir, t_from, t_to):
     """Пропускает только сегменты, перекрывающиеся с [t_from, t_to]."""
-    for segment, seg_name in geofile_splitter_multi_chanels_v2(
-        base_dir, target_month=TARGET_MONTH, target_year=TARGET_YEAR
+    for segment, seg_name in geofile_splitter_multi_chanels_v3(
+        base_dir, DAY_FROM, DAY_TO
     ):
         seg_start = segment[0].stats.starttime
         seg_end   = segment[0].stats.endtime
@@ -94,7 +105,7 @@ def main():
 
         print(f'═══ {station_name} ══════════════════════════════')
         gen = _filtered_gen(base_dir, WINDOW_FROM, WINDOW_TO)
-        preproc_sequential_v4(
+        preproc_sequential_v5(
             gen,
             json_path,
             model,

@@ -1,26 +1,47 @@
 """
-cpu_pipeline.py — параллельная обработка станций на CPU.
+cpu_pipeline.py — параллельная обработка станций на CPU (CLI).
 
 Отличия от gpu_pipeline.py (GPU):
   - GPU скрыт через set_visible_devices([]) → TF использует только CPU
   - TF потоки ограничены на воркер → процессы не конкурируют за ядра
   - MAX_WORKERS подбирается под число CPU ядер, а не VRAM
 
-Рекомендации по MAX_WORKERS для 12 ядер:
-  MAX_WORKERS=4 → 3 потока TF/воркер  (баланс скорость/параллелизм)
-  MAX_WORKERS=6 → 2 потока TF/воркер
-  MAX_WORKERS=8 → 1-2 потока TF/воркер
+Рекомендации по --max-workers для 12 ядер:
+  --max-workers 4 → 3 потока TF/воркер  (баланс скорость/параллелизм)
+  --max-workers 6 → 2 потока TF/воркер
+  --max-workers 8 → 1-2 потока TF/воркер
 
 Модель загружается 1 раз на воркер (initializer паттерн).
+
+Все параметры теперь задаются флагами командной строки (см. --help);
+значения по умолчанию соответствуют прежним хардкод-константам.
+
+Правки этой ревизии (production-plan.md, Трек 1, п.1.3, 2026-09-06),
+внесены как новый файл (предыдущая версия — legacy/cpu_pipeline.py):
+  - месяц/год (TARGET_MONTH/TARGET_YEAR) заменены на --date-from/--date-to —
+    унификация с gpu_pipeline.py, более общий случай;
+  - список станций — не список кортежей в коде, а флаг --stations
+    (коды через запятую), путь достраивается из --input-dir/--json-dir;
+  - пороги детекции (detection_threshold и т.д.), поднятые в detector.py
+    до параметров process_station_v3, теперь тоже CLI-флаги здесь.
 """
 
+import argparse
 import os
+import sys
 import importlib.util
 import concurrent.futures
 from datetime import datetime
 
+# Форсируем UTF-8 на stdout/stderr — в help-строках/докстринге есть не-ASCII
+# (стрелки →, кириллица); без этого argparse.print_help() может упасть с
+# UnicodeEncodeError в консоли по умолчанию (cp1251) на Windows.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
-# ─── Конфигурация ────────────────────────────────────────────────────────────
+
+# ─── Конфигурация (значения по умолчанию для CLI-флагов) ─────────────────────
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -33,16 +54,22 @@ MAX_WORKERS = 4
 # 4 воркера × 3 потока = 12 потоков (все ядра CPU).
 TF_THREADS_PER_WORKER = 3
 
-_IN = os.path.join(_ROOT, "geofiles", "data-in-memory", "input")
+_IN = os.path.join(_ROOT, "data-in-memory", "input")
 _JS = os.path.join(_ROOT, "json")
 
-STATIONS = [
-        (os.path.join(_IN, "ANN"),  os.path.join(_JS, "station_ANN.json")),
-        (os.path.join(_IN, "BEYR"), os.path.join(_JS, "station_BEYR.json")),
-]
+# Пусто — в оригинале все станции были закомментированы (см. legacy/cpu_pipeline.py).
+STATIONS = ""
 
-TARGET_MONTH = 4
-TARGET_YEAR  = 2024
+DATE_FROM = "2024-01-01"
+DATE_TO   = "2024-02-01"   # не включается
+
+DETECTION_THRESHOLD = 0.75
+P_THRESHOLD         = 0.3
+S_THRESHOLD         = 0.2
+KEEP_PS             = True
+ALLOW_ONLY_S        = False
+SP_LIMIT            = 45
+BATCH_SIZE          = 32
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -83,23 +110,18 @@ def _init_worker(model_path, tf_threads):
 
 def run_station(args):
     """Обрабатывает одну станцию используя уже загруженную модель."""
-    base_directory, stations_json, target_month, target_year = args
+    (base_directory, stations_json, date_from, date_to, output_base_dir,
+     thresholds) = args
     station_name = os.path.basename(os.path.normpath(base_directory))
     try:
-        from obspy import UTCDateTime
-        import calendar
-        last_day = calendar.monthrange(target_year, target_month)[1]
-        date_from = UTCDateTime(target_year, target_month, 1)
-        date_to   = UTCDateTime(target_year, target_month, last_day) + 86400
         _detector_mod.process_station_v3(
             base_directory=base_directory,
             stations_json=stations_json,
             model=_model,
             date_from=date_from,
             date_to=date_to,
-            output_base_dir=OUTPUT_BASE_DIR,
-            estimate_uncertainty=True,
-            number_of_sampling=5,
+            output_base_dir=output_base_dir,
+            **thresholds,
         )
         return (station_name, "success", "")
     except Exception:
@@ -107,28 +129,90 @@ def run_station(args):
         return (station_name, "error", traceback.format_exc())
 
 
+def _build_stations(codes, input_dir, json_dir):
+    """Достраивает пары (входная_директория, station_*.json) по кодам станций."""
+    return [
+        (os.path.join(input_dir, code), os.path.join(json_dir, f"station_{code}.json"))
+        for code in codes
+    ]
+
+
+def _parse_args():
+    parser = argparse.ArgumentParser(
+        description="Параллельная обработка станций EQTransformer на CPU "
+                    "(process_station_v3 из detector.py, ProcessPoolExecutor)."
+    )
+    parser.add_argument('--model-path', default=MODEL_PATH)
+    parser.add_argument('--output-base-dir', default=OUTPUT_BASE_DIR)
+    parser.add_argument('--max-workers', type=int, default=MAX_WORKERS)
+    parser.add_argument('--tf-threads-per-worker', type=int, default=TF_THREADS_PER_WORKER,
+                        help="0 = автоматически (cpu_count() // max-workers)")
+    parser.add_argument('--input-dir', default=_IN,
+                        help="Корневая директория с входными данными станций ({input-dir}/{код})")
+    parser.add_argument('--json-dir', default=_JS,
+                        help="Директория с station_*.json ({json-dir}/station_{код}.json)")
+    parser.add_argument('--stations', default=STATIONS,
+                        help="Коды станций через запятую")
+    parser.add_argument('--date-from', default=DATE_FROM, help="UTCDateTime-совместимая строка")
+    parser.add_argument('--date-to', default=DATE_TO, help="Не включается")
+    parser.add_argument('--detection-threshold', type=float, default=DETECTION_THRESHOLD)
+    parser.add_argument('--p-threshold', type=float, default=P_THRESHOLD)
+    parser.add_argument('--s-threshold', type=float, default=S_THRESHOLD)
+    parser.add_argument('--keep-ps', dest='keep_ps', action='store_true', default=KEEP_PS)
+    parser.add_argument('--no-keep-ps', dest='keep_ps', action='store_false')
+    parser.add_argument('--allow-only-s', action='store_true', default=ALLOW_ONLY_S)
+    parser.add_argument('--sp-limit', type=float, default=SP_LIMIT)
+    parser.add_argument('--estimate-uncertainty', dest='estimate_uncertainty',
+                        action='store_true', default=False,
+                        help="MC Dropout неопределённость (медленнее — number-of-sampling проходов на сегмент)")
+    parser.add_argument('--number-of-sampling', type=int, default=10)
+    parser.add_argument('--batch-size', type=int, default=BATCH_SIZE)
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
+    from obspy import UTCDateTime
+
+    args = _parse_args()
     start = datetime.now()
 
-    tf_threads = TF_THREADS_PER_WORKER or max(1, os.cpu_count() // MAX_WORKERS)
+    date_from = UTCDateTime(args.date_from)
+    date_to   = UTCDateTime(args.date_to)
+
+    station_codes = [s.strip() for s in args.stations.split(',') if s.strip()]
+    stations = _build_stations(station_codes, args.input_dir, args.json_dir)
+
+    tf_threads = args.tf_threads_per_worker or max(1, os.cpu_count() // args.max_workers)
+
+    thresholds = dict(
+        detection_threshold=args.detection_threshold,
+        P_threshold=args.p_threshold,
+        S_threshold=args.s_threshold,
+        keep_ps=args.keep_ps,
+        allow_only_s=args.allow_only_s,
+        sp_limit=args.sp_limit,
+        estimate_uncertainty=args.estimate_uncertainty,
+        number_of_sampling=args.number_of_sampling,
+        batch_size=args.batch_size,
+    )
 
     tasks = [
-        (bd, sj, TARGET_MONTH, TARGET_YEAR)
-        for bd, sj in STATIONS
+        (bd, sj, date_from, date_to, args.output_base_dir, thresholds)
+        for bd, sj in stations
     ]
 
     print(f"Режим:          CPU")
     print(f"Станций:        {len(tasks)}")
-    print(f"Воркеров:       {MAX_WORKERS}")
-    print(f"Потоков TF:     {tf_threads} на воркер  ({MAX_WORKERS * tf_threads} из {os.cpu_count()} ядер)")
+    print(f"Воркеров:       {args.max_workers}")
+    print(f"Потоков TF:     {tf_threads} на воркер  ({args.max_workers * tf_threads} из {os.cpu_count()} ядер)")
     print(f"Модель грузится 1 раз на воркер (initializer)")
     print("-" * 60)
 
     results = []
     with concurrent.futures.ProcessPoolExecutor(
-        max_workers=MAX_WORKERS,
+        max_workers=args.max_workers,
         initializer=_init_worker,
-        initargs=(MODEL_PATH, tf_threads)
+        initargs=(args.model_path, tf_threads)
     ) as executor:
         future_map = {executor.submit(run_station, t): t[0] for t in tasks}
         for future in concurrent.futures.as_completed(future_map):
@@ -143,5 +227,5 @@ if __name__ == "__main__":
     ok  = sum(1 for _, s in results if s == "success")
     err = sum(1 for _, s in results if s == "error")
     print("-" * 60)
-    print(f"Воркеров: {MAX_WORKERS}  Потоков TF/воркер: {tf_threads}")
+    print(f"Воркеров: {args.max_workers}  Потоков TF/воркер: {tf_threads}")
     print(f"Успешно: {ok}  Ошибок: {err}  Время: {total:.1f} мин")

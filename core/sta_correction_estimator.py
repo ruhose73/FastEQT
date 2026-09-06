@@ -1,6 +1,13 @@
 """
 sta_correction_estimator.py — вычисление станционных поправок ML.
 
+Правки этой ревизии (production-plan.md, Трек 1, п.1.1, 2026-09-06),
+предыдущая версия — legacy/sta_correction_estimator.py: убрана
+неиспользуемая ML_OUTLIER_ABS (докстринг compute_event_ml_detail_v2
+заявлял её как условие отсечения выбросов, в коде не применялась —
+оставлена только фактическая σ-фильтрация) и неиспользуемый _PAZ_WA.
+Алгоритм/формула ML не менялись.
+
 Алгоритм:
   1. Матчинг каталог (catalog.xlsx) → associations.xml (как в validate_associator.py).
   2. Для каждого совпавшего события читает форму волны, измеряет амплитуду S-волны.
@@ -19,6 +26,15 @@ sta_correction_estimator.py — вычисление станционных по
     python core/sta_correction_estimator.py --min-events 10 --year 2024 --month 1
     python core/sta_correction_estimator.py --rebuild-cache --year 2024 --month 1
 """
+
+import sys
+
+# Форсируем UTF-8 на stdout/stderr — в help-строках и выводе есть не-ASCII
+# (стрелки →, кириллица); без этого argparse.print_help() падает с
+# UnicodeEncodeError в консоли по умолчанию (cp1251) на Windows.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 import argparse
 import csv
@@ -82,22 +98,15 @@ AMP_RATIO_MIN = 0.0    # мин. допустимый ratio A_nm / ожидае�
 LG_A_NM_MIN   = 0.0   # мин. lg(A_нм): < порога = шум                (0 = выключено)
 LG_A_NM_MAX   = 0.0   # макс. lg(A_нм): > порога = насыщение         (0 = выключено)
 
-# Константы для диагностики ML (должны совпадать с ml_filter_v4.py)
+# Константы для диагностики ML (должны совпадать с core/ml_filter_v5.py —
+# по факту не совпадают, см. sta_correction_estimator.md, раздел про --diag-ml)
 _ML_RATIO_MIN  = 0.1
 _ML_N_ITER     = 1
 _ML_N_MIN_STA  = 3
 
-# Параметры outlier-фильтра для compute_event_ml_detail_v2
-ML_OUTLIER_ABS   = 0.3   # абсолютный порог |MLi - Mmed|
+# Параметр outlier-фильтра для compute_event_ml_detail_v2
 ML_OUTLIER_SIGMA = 2.0   # множитель σ: удалять если |MLi - Mmed| > k·σ
 
-_PAZ_WA = {
-    'poles': [(-6.283185307 + 4.712388980j),
-              (-6.283185307 - 4.712388980j)],
-    'zeros': [0j, 0j],
-    'gain': 1.0,
-    'sensitivity': 2800.0,
-}
 _COMP_PRIORITY = ('E', 'N', 'Z')
 
 BED_NS = 'http://quakeml.org/xmlns/bed/1.2'
@@ -554,7 +563,8 @@ def compute_raw_ml(pub_id, sta, r_km, amplitudes):
 def compute_event_ml_detail(pub_id, r_dict, amplitudes, sta_corr, exclude_stations=None):
     """
     Вычисляет ML события (медиана по станциям) с детализацией.
-    Логика идентична ml_filter_v4.compute_event_ml.
+    Логика идентична legacy/ml_filter_v4.py:compute_event_ml (ratio-фильтр,
+    убран из core/ml_filter_v5.py — там единственный путь агрегации compute_event_ml_v2).
 
     Возвращает: (ml, used_entries, filtered_entries)
       used_entries    = [(sta, r_km, A_nm, ml_sta), ...]  — вошли в медиану
@@ -614,7 +624,7 @@ def compute_event_ml_detail_v2(pub_id, r_dict, amplitudes, sta_corr,
     Алгоритм:
       1. ML_sta = ML_raw + S для каждой станции.
       2. Медиана Mmed по всем станциям.
-      3. Удалить выбросы: |MLi - Mmed| > outlier_abs  ИЛИ  > outlier_sigma · σ.
+      3. Удалить выбросы: |MLi - Mmed| > outlier_sigma · σ.
       4. ML = среднее по оставшимся.
 
     Если станций < _ML_N_MIN_STA — возвращает среднее без фильтрации.
