@@ -41,8 +41,8 @@ flowchart TD
 | `metadata_processor.py` → все модули с геолокацией | JSON `{STA: {network, channels, coords:[lat,lon,elv]}}` | ⚠️ разрыв формата: `main.py` пишет один агрегированный `workspace/data_processors/output/station_list_RU.json`, а детектор/ассоциатор читают отдельные `station_{CODE}.json` той же схемы — см. `data_processors/README.md` |
 | `detector.py::process_station_v3` → `associator.py` | CSV, `CSV_HEADER` (19 колонок) | `event_start_time/end_time`, `p_arrival_time`/`s_arrival_time` + вероятности/SNR/uncertainty |
 | `associator.py` (стейджинг) → `run_associator_v2` | CSV `X_prediction_results.csv`, те же 19 колонок (отфильтрованное подмножество строк, в режиме `weight` — с переписанными вероятностями) | — |
-| `run_associator_v2` → `ml_filter_v4.py`/`validate_associator_v2.py` | QuakeML `associations.xml` (`Event`/`Origin(time only)`/`Pick(phase_hint=P\|S)`) + `Y2000.phs` (hypoinverse) + `traceNmae_dic.json` | `publicID` (`smi:local/...`, авто от ObsPy), `waveform_id.station_code` |
-| `ml_filter_v4.py` → `validate_associator_v2.py`/`export_bul.py` | QuakeML, тот же формат, отфильтрованный по ML | — |
+| `run_associator_v2` → `ml_filter_v5.py`/`validate_associator_v2.py` | QuakeML `associations.xml` (`Event`/`Origin(time only)`/`Pick(phase_hint=P\|S)`) + `Y2000.phs` (hypoinverse) + `traceNmae_dic.json` | `publicID` (`smi:local/...`, авто от ObsPy), `waveform_id.station_code` |
+| `ml_filter_v5.py` → `validate_associator_v2.py`/`export_bul.py` | QuakeML, тот же формат, отфильтрованный по ML | — |
 | `validate_associator_v2.py`/`export_bul.py` → `compare_bul.py` | `.BUL` (IMS1.0:SHORT, фиксированные колонки) | `Date[1:10]`, `Time[12:22]`, `Sta[0:5]` |
 
 ---
@@ -247,7 +247,7 @@ $$
 
 Реальная обработка одной станции идёт через цепочку `geofile_splitter_multi_chanels_v3` (нарезка на сегменты, см. выше) → `preproc_sequential_v5` (последовательно потребляет генератор сегментов, пишет результат в CSV по мере готовности) → `worker_v4` на каждый сегмент (`preprocessorV7_mem` + `predictor_mem_non_hdf_load_model_v6`, разд. 4). Точка входа по станции — `process_station_v3()`, её вызывают `cpu_pipeline.py`/`gpu_pipeline.py`; диапазон дат передаётся явно (`date_from`/`date_to`), а параметры MC Dropout (`estimate_uncertainty`/`number_of_sampling`) пробрасываются до предиктора.
 
-`detector.py` также поддерживает прямой последовательный запуск (`python core/detector.py`, точка входа `process_station()` из `__main__` этого файла) — однопроцессный, без пула воркеров. Докстринг в начале файла обещает для этого режима «параллельный режим по умолчанию, `MAX_WORKERS` процессов»; фактически `__main__` — обычный `for bd, sj in STATIONS: process_station(...)` в одном процессе с одной моделью, загруженной один раз до цикла, а `MAX_WORKERS` объявлена, но нигде не читается. Реальный параллельный `initializer`-паттерн, который описывает докстринг, реализован не в `detector.py`, а в `cpu_pipeline.py`/`gpu_pipeline.py` — для параллельного запуска нескольких станций нужен один из них.
+`detector.py` также поддерживает прямой запуск (`python core/detector.py --stations ...`) через тот же `process_station_v3()` — однопроцессный, без пула воркеров: список станций из `--stations` обрабатывается последовательно, одной уже загруженной моделью. Параллельная обработка нескольких станций одновременно (пул процессов, `initializer`-паттерн) реализована не в `detector.py`, а в `cpu_pipeline.py`/`gpu_pipeline.py` — для неё нужен один из них.
 
 ### Загрузка модели и cuDNN-патч
 
@@ -257,7 +257,7 @@ LSTM-слой должен удовлетворять ряду условий (`
 
 Для каждой найденной пары P/S дополнительно считается SNR — используется дальше на стейджинге (разд. 6) и как один из весов при агрегации T0 (разд. 7).
 
-Полный `CSV_HEADER` (19 колонок, общий для `process_station()` и `process_station_v3()`):
+Полный `CSV_HEADER` (19 колонок):
 
 ```
 file_name, network, station, instrument_type,
@@ -291,10 +291,9 @@ flowchart TD
 |---|---|---|
 | Устройство | `tf.config.set_visible_devices([], 'GPU')` | GPU используется, `set_memory_growth` |
 | TF-параллелизм | `set_inter/intra_op_parallelism_threads` на воркер | не ограничивается |
-| `MAX_WORKERS` | под число CPU-ядер | под объём VRAM |
-| Диапазон дат | `TARGET_MONTH`/`TARGET_YEAR` → `calendar.monthrange` | `DATE_FROM`/`DATE_TO` (`UTCDateTime`) напрямую |
+| `--max-workers` (по умолчанию) | под число CPU-ядер | под объём VRAM |
 
-`gpu_pipeline.py` содержит собственную копию `get_threads_to_use(percent)`, нигде не вызываемую — дублирует `core/threads.py`, мёртвый код.
+Диапазон дат (`--date-from`/`--date-to`, `UTCDateTime`) — один и тот же флаг в обоих файлах.
 
 ---
 
@@ -426,14 +425,14 @@ $$
 
 | Флаг | По умолчанию | Назначение |
 |---|---|---|
-| `--assoc` | `memory-25/assoc_output_cpu_2/associations_ml1p5.xml` | входной XML |
+| `--assoc` | `workspace/magnitude/output/associations_ml.xml` | входной XML |
 | `--catalog` | `catalog.xlsx` | эталонный каталог |
 | `--window` | `60` с | допуск сравнения T0 |
 | `--vp` / `--vs` | `6.0` / `3.4883` км/с | скорости коровой модели |
 | `--sigma` | `1.0` (на практике `2.0`) | множитель σ для отброса станций-выбросов |
 | `--year` / `--month` / `--min-mag` | нет | фильтры каталога |
 | `--r-min` / `--r-max` | `20.0` / нет | границы R для включения станции |
-| `--amps` | `amps_wa_ml_v2_15.csv` | CSV амплитуд для ML |
+| `--amps` | `workspace/magnitude/output/amps_filter_cache.csv` | CSV амплитуд для ML |
 | `--no-amps` | выкл. | не считать ML |
 | `--sta-corrections` | нет | CSV станционных поправок `station,S` |
 | `--prob-dir` | нет | папка `assoc_input` для `ot_probw`/`ot_probsnr` |
@@ -450,7 +449,7 @@ $$
 
 ---
 
-## 8. Магнитуда (`core/ml_filter_v4.py`)
+## 8. Магнитуда (`core/ml_filter_v5.py`)
 
 ### Формула
 
@@ -473,11 +472,11 @@ flowchart TD
     A6 --> A7["Амплитуда A, нм"]
 ```
 
-Реализация: `build_waveform_index` строит индекс файлов по станции **один раз на станцию** по приоритету компонент E > N > Z — если для станции есть файлы E, компоненты N/Z для неё вообще не читаются ни для одного события (не fallback под конкретное событие). Перед чтением MSEED события кластеризуются по времени (`_split_triples_by_time`, `MAX_GROUP_SPAN_SEC=300` с) — события в пределах 5 минут читаются одним вызовом `obspy_read()`. Окно чтения — `[min(S) − 60, max(S) + 5 + 60]` с (запас `READ_MARGIN_SEC=60` с нужен как контекст для `remove_response`/`detrend`/`taper`); реальный измерительный интервал `[S, S+5]` вырезается после снятия ответа. `remove_response(output='DISP', pre_filt=(0.5, 1.0, nyq·0.85, nyq·0.95), water_level=60)`; частота дискретизации, не входящая в `{50, 80, 100, 200}` Гц, принудительно заменяется на `100.0`/`50.0` (тот же класс проблемы, что правило №2 `CLAUDE.md`). Если `remove_response` падает исключением — амплитуда для всех событий кластера пишется как `None`, не прерывает прогон.
+Реализация: `build_waveform_index` строит индекс файлов по станции **один раз на станцию** по приоритету компонент E > N > Z — если для станции есть файлы E, компоненты N/Z для неё вообще не читаются ни для одного события (не fallback под конкретное событие). Перед чтением MSEED события кластеризуются по времени (`_split_triples_by_time`, `MAX_GROUP_SPAN_SEC=300` с) — события в пределах 5 минут читаются одним вызовом `obspy_read()`. Окно чтения — `[min(S) − 60, max(S) + 5 + 60]` с (запас `READ_MARGIN_SEC=60` с нужен как контекст для `remove_response`/`detrend`/`taper`); реальный измерительный интервал `[S, S+5]` вырезается после снятия ответа. `remove_response(output='DISP', pre_filt=(0.5, 1.0, nyq·0.85, nyq·0.95), water_level=60)`; частота дискретизации, не входящая в `{50, 80, 100, 200}` Гц, принудительно заменяется на `100.0`/`50.0` — приближение к ближайшему из этого небольшого набора значений, не фактическая частота станции. Если `remove_response` падает исключением — амплитуда для всех событий кластера пишется как `None`, не прерывает прогон.
 
 ### Кэширование амплитуд
 
-CSV `pub_id,sta,A` (метры), путь по умолчанию `amps_wa_v3_weight_ml15.csv` в корне репозитория. При повторном запуске кэш подгружается целиком, MSEED не перечитывается — вычисление ML и фильтрация XML занимают секунды; пересборка — `--rebuild-cache`. Кэш специфичен для набора событий во входном XML: при смене `--assoc-in` на XML с другими событиями кэш нужно пересобрать (новые `pub_id` получат `A=None`). Смена `--ml-threshold`/`--sta-corrections`/`--exclude-stations` пересборки не требует — это только постобработка уже закэшированных сырых амплитуд. Кэш не привязан к параметрам фильтрации (`--no-bandpass`) — при смене этого флага между запусками с тем же `--cache-amp` кэш применяется как есть, пересборка не форсируется автоматически.
+CSV `pub_id,sta,A` (метры), путь по умолчанию `workspace/magnitude/output/amps_filter_cache.csv`. При повторном запуске кэш подгружается целиком, MSEED не перечитывается — вычисление ML и фильтрация XML занимают секунды; пересборка — `--rebuild-cache`. Кэш специфичен для набора событий во входном XML: при смене `--assoc-in` на XML с другими событиями кэш нужно пересобрать (новые `pub_id` получат `A=None`). Смена `--ml-threshold`/`--sta-corrections`/`--exclude-stations` пересборки не требует — это только постобработка уже закэшированных сырых амплитуд. Кэш не привязан к параметрам фильтрации (`--no-bandpass`) — при смене этого флага между запусками с тем же `--cache-amp` кэш применяется как есть, пересборка не форсируется автоматически.
 
 ### Многоступенчатая фильтрация ML события
 
@@ -496,29 +495,29 @@ $$
 
 ### Три независимые реализации одной формулы
 
-Формула ML реализована независимо (без общего импорта) как минимум в `core/ml_filter_v4.py` (`ML_OUTLIER_SIGMA=1.5`) и в `core/validate_associator_v2.py::compute_ml` (`ML_SIGMA=1.0` — заметно строже). В проекте есть и третья независимая реализация той же формулы, встроенная в отдельный, не входящий в реальный рабочий процесс механизм калибровки станционных поправок (см. ниже) — там используется ещё один, третий по счёту порог σ-фильтра (`2.0`). Ни одна из трёх не импортирует формулу из другой — это не единая точка правды, а три параллельных реализации одной и той же идеи с разными σ-порогами (и, в случае `validate_associator_v2.py`, без нижнего/верхнего порога по `R` на уровне общего словаря станций — фильтр применяется только внутри `compute_ml`). Величины ML, посчитанные разными путями на одних и тех же данных, не обязаны точно совпадать — это заложенное свойство текущей реализации, не ошибка, которую надо молча унифицировать.
+Формула ML реализована независимо (без общего импорта) как минимум в `core/ml_filter_v5.py` (`ML_OUTLIER_SIGMA=1.5`) и в `core/validate_associator_v2.py::compute_ml` (`ML_SIGMA=1.0` — заметно строже). В проекте есть и третья независимая реализация той же формулы, встроенная в отдельный, не входящий в реальный рабочий процесс механизм калибровки станционных поправок (см. ниже) — там используется ещё один, третий по счёту порог σ-фильтра (`2.0`). Ни одна из трёх не импортирует формулу из другой — это не единая точка правды, а три параллельных реализации одной и той же идеи с разными σ-порогами (и, в случае `validate_associator_v2.py`, без нижнего/верхнего порога по `R` на уровне общего словаря станций — фильтр применяется только внутри `compute_ml`). Величины ML, посчитанные разными путями на одних и тех же данных, не обязаны точно совпадать — это заложенное свойство текущей реализации, не ошибка, которую надо молча унифицировать.
 
 ### Станционная поправка `S`
 
-Формула принимает поправку `S_i` (`--sta-corrections`, CSV `station,S` или `station,correction`) — прибавляется к `ML_i` ещё на шаге вычисления, то есть до σ-фильтра. Механизм подключаем и работоспособен, но по умолчанию `S=0`. Расчёт актуальных поправок по подтверждённым событиям каталога существует в проекте, но реально не используется — подтверждённых событий пока слишком мало для устойчивого расчёта; он исключён из этого документа по имени, так как не входит в рабочий процесс (см. `ml_filter_v4.py` за форматом `--sta-corrections`, если/когда актуальная калибровка появится).
+Формула принимает поправку `S_i` (`--sta-corrections`, CSV `station,S` или `station,correction`) — прибавляется к `ML_i` ещё на шаге вычисления, то есть до σ-фильтра. Механизм подключаем и работоспособен, но по умолчанию `S=0`. Расчёт актуальных поправок по подтверждённым событиям каталога существует в проекте, но реально не используется — подтверждённых событий пока слишком мало для устойчивого расчёта; он исключён из этого документа по имени, так как не входит в рабочий процесс (см. `ml_filter_v5.py` за форматом `--sta-corrections`, если/когда актуальная калибровка появится).
 
 ### Диагностика и CLI
 
 ```bash
-python core/ml_filter_v4.py --info
-python core/ml_filter_v4.py --ml-threshold 1.0
-python core/ml_filter_v4.py --ml-threshold 1.0 --sta-corrections sta_corrections_dyagilev2023.csv
-python core/ml_filter_v4.py --rebuild-cache
-python core/ml_filter_v4.py --diag-pubid smi:local/abc123
+python core/ml_filter_v5.py --info
+python core/ml_filter_v5.py --ml-threshold 1.0
+python core/ml_filter_v5.py --ml-threshold 1.0 --sta-corrections sta_corrections_dyagilev2023.csv
+python core/ml_filter_v5.py --rebuild-cache
+python core/ml_filter_v5.py --diag-pubid smi:local/abc123
 ```
 
 | Флаг | По умолчанию | Назначение |
 |---|---|---|
-| `--assoc-in` | `data-in-memory/gpu_splimit_45_may_v2/assoc_output_lim_weight_v2/associations.xml` | входной XML (⚠️ по умолчанию — выход режима `UNCERTAINTY_MODE='weight'`; для другого режима путь указывать явно) |
+| `--assoc-in` | `workspace/associator/output/associations.xml` | входной XML |
 | `--assoc-out` | рядом с `--assoc-in`, `associations_ml<tag>.xml` | выходной XML |
-| `--waveforms` | `geofiles/` | папка с переименованными формами волн |
-| `--cache-amp` | `amps_wa_v3_weight_ml15.csv` | CSV-кэш амплитуд |
-| `--metadata-dir` | `metadata/` | StationXML для `remove_response` |
+| `--waveforms` | `workspace/data_processors/output/geofiles` | папка с переименованными формами волн |
+| `--cache-amp` | `workspace/magnitude/output/amps_filter_cache.csv` | CSV-кэш амплитуд |
+| `--metadata-dir` | `workspace/data_processors/input/metadata` | StationXML для `remove_response` |
 | `--no-bandpass` | выкл. | отключить фильтр 1–5 Гц |
 | `--sta-corrections` | нет | CSV поправок |
 | `--ml-threshold` | `1.0` | оставить события с ML ≥ порога |
@@ -586,9 +585,9 @@ STOP
 | `--assoc` | `v2.DEFAULT_ASSOC` | входной XML |
 | `--amps` / `--no-amps` | `v2.DEFAULT_AMPS` / выкл. | CSV амплитуд для ML / не считать |
 | `--sta-corrections` | нет | CSV поправок |
-| `--prob-dir` | `memory-25/assoc_input_cpu_2` | источник `p_probability`/`p_snr`/`s_snr` |
-| `--metadata-dir` | `metadata-25/` | StationXML для регионов/координат |
-| `--output-cpu-dir` | `memory-25/output_cpu` | fallback-источник координат |
+| `--prob-dir` | `workspace/associator/input` | источник `p_probability`/`p_snr`/`s_snr` |
+| `--metadata-dir` | `workspace/data_processors/input/metadata` | StationXML для регионов/координат |
+| `--output-cpu-dir` | `workspace/detector/output` | fallback-источник координат |
 | `--max-station-dist-km` | `800.0` | порог отсева дальних станций |
 | `--vp` / `--vs` / `--sigma` | `v2.DEFAULT_*` | параметры S-P и σ-фильтра |
 | `--r-min` / `--r-max` | `20.0` / нет | границы R |
@@ -636,15 +635,15 @@ $$
 | Стык | Формат | Реальные поля |
 |---|---|---|
 | SDS-архив | miniSEED | `NET.STA.LOC.CHAN.TYPE.YEAR.DAY`, один канал/сутки |
-| `geofile_processor.py` → `geofiles/` | miniSEED, переименован | `NET.STA.LOC.CHAN.TYPE__20240401T000000Z__20240402T000000Z` |
+| `geofile_processor.py` → `workspace/data_processors/output/geofiles/` | miniSEED, переименован | `NET.STA.LOC.CHAN.TYPE__20240401T000000Z__20240402T000000Z` |
 | `metadata_processor.py` → JSON | JSON | `{STA: {network, channels:[...], coords:[lat,lon,elv]}}` |
 | `detector.py::process_station_v3` → CSV на станцию | CSV, `CSV_HEADER` | `file_name, network, station, instrument_type, station_lat, station_lon, station_elv, event_start_time, event_end_time, detection_probability, detection_uncertainty, p_arrival_time, p_probability, p_uncertainty, p_snr, s_arrival_time, s_probability, s_uncertainty, s_snr` |
 | `associator.py` (стейджинг) → `X_prediction_results.csv` | CSV, те же 19 колонок | подмножество строк, прошедших `_passes`/`_passes_v2`; в режиме `weight` — `detection_probability`/`p_probability`/`s_probability` переписаны на эффективные |
 | `run_associator_v2` → `associations.xml` | QuakeML | `Event.publicID` (`smi:local/...`), `Origin.time` (только время), `Pick.time`, `Pick.waveform_id.{network_code,station_code}`, `Pick.phase_hint` (`P`/`S`) |
 | `run_associator_v2` → `Y2000.phs` | hypoInverse phase format | гипоцентровая строка (координаты первой станции-плейсхолдер, `depth=5.0`, `mag=0.0`) + строки фаз |
 | `run_associator_v2` → `traceNmae_dic.json` | JSON | `{event_id: [traceID*station*event_start_time, ...]}` |
-| `ml_filter_v4.py` → `associations_ml<tag>.xml` | QuakeML, тот же формат | подмножество событий с `ML >= --ml-threshold` |
-| `ml_filter_v4.py` кэш | CSV | `pub_id, sta, A` (метры) |
+| `ml_filter_v5.py` → `associations_ml<tag>.xml` | QuakeML, тот же формат | подмножество событий с `ML >= --ml-threshold` |
+| `ml_filter_v5.py` кэш | CSV | `pub_id, sta, A` (метры) |
 | `validate_associator_v2.py --out-xml` | QuakeML BED 1.2 | `Event`/`Origin(time only)`/`Magnitude(ML)`/`Pick*` |
 | `export_bul.py`/`validate_associator_v2.py --out-xml` → `.BUL` | IMS1.0:SHORT, фиксированные колонки | Origin Block (136 симв.), Magnitude Block (38 симв.), Phase Block (122 симв.) |
 | `.BUL` → `compare_bul.py` | текст | `Date[1:10]`, `Time[12:22]`, `Sta[0:5]`, `Magnitude[7:10]` |
@@ -653,47 +652,37 @@ $$
 
 ## 11. Как запускать пайплайн целиком
 
-Ни один из модулей без явного CLI (`detector.py`, `cpu_pipeline.py`, `gpu_pipeline.py`, `associator.py`) не принимает параметры из командной строки — списки станций, диапазоны дат, пороги правятся вручную, константами в начале файла, перед каждым запуском. Реальная последовательность команд:
+Все модули пайплайна (`detector.py`, `cpu_pipeline.py`, `gpu_pipeline.py`, `associator.py`, `sta_correction_estimator.py`, `ml_filter_v5.py`, `validate_associator_v2.py`, `export_bul.py`, `compare_bul.py`) принимают параметры флагами командной строки — `--help` на каждом даёт полный список. Значения по умолчанию указывают на стандартную раскладку `workspace/` (см. разд. 0/`workspace/README.md`); `data_processors/main.py` — исключение, его пути заданы константами в начале файла. Реальная последовательность команд:
 
 ```bash
-# 1. Подготовка данных (запускать из data_processors/)
-cd data_processors
-python main.py
-cd ..
+# 1. Подготовка данных
+python data_processors/main.py
 
-# 2. Детекция — отредактировать STATIONS/TARGET_MONTH(-YEAR) либо DATE_FROM/DATE_TO
-#    и OUTPUT_BASE_DIR в cpu_pipeline.py/gpu_pipeline.py перед запуском.
-#    Для параллельной обработки нескольких станций нужен один из
-#    pipeline-файлов — python core/detector.py напрямую обрабатывает
-#    список станций последовательно, одним процессом.
-python core/gpu_pipeline.py     # или core/cpu_pipeline.py
+# 2. Детекция — список станций через --stations, диапазон дат через
+#    --date-from/--date-to. Для параллельной обработки нескольких станций
+#    нужен один из pipeline-файлов — python core/detector.py напрямую
+#    обрабатывает список станций последовательно, одним процессом.
+python core/gpu_pipeline.py --stations SOC,VSLR,BEYR --date-from 2024-04-01 --date-to 2024-05-01
+#    или: python core/cpu_pipeline.py ...
 
-# 3. Ассоциация — отредактировать STATIONS/DET_THR/P_THR/S_THR/KEEP_PS/
-#    UNCERTAINTY_MODE/start_time/end_time в associator.py.
-#    Запускать из корня репозитория (phase_dataset создаётся в текущей
-#    рабочей директории — см. разд. 6).
-python core/associator.py
+# 3. Ассоциация
+python core/associator.py --stations SOC,VSLR,BEYR --uncertainty-mode weight
 
 # 4. Фильтрация по магнитуде
-python core/ml_filter_v4.py --assoc-in data-in-memory/.../assoc_output_lim_weight/associations.xml \
-                             --ml-threshold 1.0
+python core/ml_filter_v5.py --ml-threshold 1.0
 
-# 5. Валидация против каталога (практические флаги, не CLI-дефолты — см. разд. 7)
-python core/validate_associator_v2.py --assoc .../associations_ml1p0.xml \
-                                       --sigma 2.0 --match-by psnr \
-                                       --prob-dir data-in-memory/.../assoc_input
+# 5. Валидация против каталога
+python core/validate_associator_v2.py --sigma 2.0 --match-by psnr
 
 # 6. Экспорт в бюллетень
-python core/export_bul.py --assoc .../associations_ml1p0.xml \
-                           --prob-dir data-in-memory/.../assoc_input \
-                           --out bul_out/2024_04.BUL
+python core/export_bul.py --out workspace/bulletin/output/2024_04.BUL
 
-# 7. Сравнение с официальным бюллетенем ГС РАН
-python core/compare_bul.py --reference bul/2024_04_official.BUL \
-                            --candidate bul_out/2024_04.BUL
+# 7. Сравнение с официальным бюллетенем
+python core/compare_bul.py --reference workspace/bulletin/input/2024_04_official.BUL \
+                            --candidate workspace/bulletin/output/2024_04.BUL
 ```
 
-Порядок шагов 1–7 — тот же, что зафиксирован как рабочий во всех планирующих документах проекта (`CLAUDE.md`, `doc-plan.md`). Шаг 4 обязателен перед шагом 5/6 только в том смысле, что оба следующих шага принимают путь к XML как явный аргумент — при желании их можно направить и на неотфильтрованный выход ассоциатора, просто это не тот путь, которым пользуются на практике.
+Шаг 4 обязателен перед шагом 5/6 только в том смысле, что оба следующих шага принимают путь к XML как явный аргумент — при желании их можно направить и на неотфильтрованный выход ассоциатора, просто это не тот путь, которым пользуются на практике.
 
 ---
 
@@ -705,7 +694,7 @@ python core/compare_bul.py --reference bul/2024_04_official.BUL \
 - `core/detector.md` — обе цепочки функций детектора, cuDNN-патч
 - `core/cpu_pipeline.md` / `core/gpu_pipeline.md` — параллельная обработка
 - `core/associator.md` — стейджинг, `run_associator_v2`, `_coherent_subset`
-- `core/ml_filter_v4.md` — фильтрация по локальной магнитуде, кэш амплитуд
+- `core/ml_filter_v5.md` — фильтрация по локальной магнитуде, кэш амплитуд
 - `core/validate_associator_v2.md` — оценка T0 без гипоцентра, recall vs каталог, разобранные диагностические примеры
 - `core/export_bul.md` — экспорт в IMS1.0:SHORT
 - `core/compare_bul.md` — сравнение с официальным бюллетенем

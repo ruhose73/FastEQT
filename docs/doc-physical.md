@@ -19,7 +19,7 @@ flowchart TD
     A["data_processors/<br/>Подготовка входных данных"]
     B["detector.py<br/>+ cpu_pipeline.py / gpu_pipeline.py<br/>Детекция P/S на записи станции"]
     C["associator.py<br/>Сетевая ассоциация"]
-    D["ml_filter_v4.py<br/>Оценка ML, фильтрация по порогу"]
+    D["ml_filter_v5.py<br/>Оценка ML, фильтрация по порогу"]
     E["validate_associator_v2.py<br/>Оценка T0 (S-P), сравнение с каталогом"]
     F["export_bul.py<br/>Экспорт в IMS1.0:SHORT"]
     G["compare_bul.py<br/>Сравнение с официальным бюллетенем"]
@@ -39,8 +39,8 @@ flowchart TD
 | SDS-архив → `detector.py` | miniSEED, суточные файлы по станции/каналу | сырые отсчёты грунтового движения по трём компонентам |
 | StationXML → `detector.py`/`associator.py` | JSON (координаты + список каналов на станцию) | координаты станций, используемые ассоциатором и позже — для оценки расстояния/региона |
 | `detector.py` → `associator.py` | CSV на станцию | по одной строке на обнаруженное вступление: время детекции, времена P/S (если найдены), вероятности, SNR, (опционально) неопределённость MC Dropout |
-| `associator.py` → `ml_filter_v4.py` / `validate_associator_v2.py` | QuakeML XML (`associations.xml`) | события с привязанными к ним P/S-пиками по станциям, без гипоцентра |
-| `ml_filter_v4.py` → `validate_associator_v2.py` | QuakeML XML (тот же формат, отфильтрованный по ML) | подмножество событий с ML выше заданного порога |
+| `associator.py` → `ml_filter_v5.py` / `validate_associator_v2.py` | QuakeML XML (`associations.xml`) | события с привязанными к ним P/S-пиками по станциям, без гипоцентра |
+| `ml_filter_v5.py` → `validate_associator_v2.py` | QuakeML XML (тот же формат, отфильтрованный по ML) | подмножество событий с ML выше заданного порога |
 | `validate_associator_v2.py`/`export_bul.py` → `compare_bul.py` | текстовый бюллетень IMS1.0:SHORT (`.BUL`) | время очага, магнитуда (если посчитана), список фаз P/S по станциям |
 
 ---
@@ -406,7 +406,7 @@ $$
 
 ---
 
-## 7. Оценка локальной магнитуды (`ml_filter_v4.py`)
+## 7. Оценка локальной магнитуды (`ml_filter_v5.py`)
 
 ### Формула
 
