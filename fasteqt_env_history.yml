@@ -1,0 +1,14 @@
+name: eqt3
+channels:
+  - conda-forge
+  - defaults
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
+  - https://repo.anaconda.com/pkgs/msys2
+dependencies:
+  - python==3.10.8
+  - tensorflow
+  - anyio==3.6.2
+  - cudatoolkit=11.2
+  - cudnn=8.1.0
+prefix: C:\Users\ruhose73\anaconda3\envs\eqt3
