@@ -20,8 +20,17 @@ validate_associator_v2.py — оценка origin time через S-P пики �
 Использование:
     python core/validate_associator_v2.py --year 2024 --month 5
     python core/validate_associator_v2.py --window 25 --sigma 2.0
-    python core/validate_associator_v2.py --assoc data-in-memory/.../associations.xml
+    python core/validate_associator_v2.py --assoc workspace/associator/output/associations.xml
 """
+
+import sys
+
+# Форсируем UTF-8 на stdout/stderr — в help-строках есть не-ASCII (σ, кириллица);
+# без этого argparse.print_help() падает с UnicodeEncodeError в консоли по
+# умолчанию (cp1251) на Windows.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 import argparse
 import csv
@@ -37,8 +46,8 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 CATALOG_PATH   = os.path.join(_ROOT, "catalog.xlsx")
 DEFAULT_ASSOC  = os.path.join(
-    _ROOT, "memory-25", "assoc_output_cpu_2", "associations_ml1p5.xml")
-DEFAULT_AMPS   = os.path.join(_ROOT, "amps_wa_ml_v2_15.csv")
+    _ROOT, "workspace", "magnitude", "output", "associations_ml.xml")
+DEFAULT_AMPS   = os.path.join(_ROOT, "workspace", "magnitude", "output", "amps_filter_cache.csv")
 DEFAULT_WINDOW = 60       # сек — допуск сравнения с каталогом
 DEFAULT_VP     = 6.0      # км/с
 DEFAULT_VS     = 3.4883   # км/с
@@ -164,7 +173,7 @@ def load_pick_probabilities(assoc_input_dir):
 
 
 def load_amplitudes(path):
-    """Загружает amps_wa.csv → {(pub_id, sta): A_meters}."""
+    """Загружает кэш амплитуд (см. DEFAULT_AMPS/--amps) → {(pub_id, sta): A_meters}."""
     amps = {}
     with open(path, newline='', encoding='utf-8') as f:
         for row in csv.DictReader(f):

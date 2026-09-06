@@ -31,12 +31,15 @@ from datetime import datetime
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 MODEL_PATH      = os.path.join(_ROOT, "ModelsAndSampleData", "EqT_original_model.h5")
-OUTPUT_BASE_DIR = os.path.join(_ROOT, "data-in-memory", "gpu_splimit_45_may_v2", "output_detector")
+OUTPUT_BASE_DIR = os.path.join(_ROOT, "workspace", "detector", "output")
 
 MAX_WORKERS = 6
 
-_IN = os.path.join(_ROOT, "geofiles")
-_JS = os.path.join(_ROOT, "json")
+# По умолчанию — выход data_processors/main.py (workspace/, production-plan.md
+# Трек 1); workspace/detector/input/ существует отдельно для случая, когда
+# волновые файлы/station_*.json кладутся туда напрямую, минуя data_processors.
+_IN = os.path.join(_ROOT, "workspace", "data_processors", "output", "geofiles")
+_JS = os.path.join(_ROOT, "workspace", "data_processors", "output")
 
 STATIONS = ("NCK,NVPR,PXTR,PYA1,RPOR,SGKR,SHA1,SOC,SPGR,SRGR,"
             "STDR,SUKR,TLTR,TMNR,TRKR,UNCR,URKR,VLKR")

@@ -58,11 +58,11 @@ python core/ml_filter_v5.py --ml-outlier-sigma 2.0 --n-min-sta 5
 
 | Флаг | По умолчанию | Назначение |
 |---|---|---|
-| `--assoc-in` | `data-in-memory/gpu_splimit_45_may_v2/assoc_output_lim_weight_v2/associations.xml` | входной XML ассоциатора |
+| `--assoc-in` | `workspace/associator/output/associations.xml` | входной XML ассоциатора |
 | `--assoc-out` | рядом с `--assoc-in`, имя `associations_ml<thr>.xml` | выходной XML (см. правило именования ниже) |
-| `--waveforms` | `geofiles/` | папка с переименованными формами волн (см. `data_processors/geofile_processor.py`) |
-| `--cache-amp` | `amps_wa_v3_weight_ml15.csv` (в корне репо) | CSV-кэш амплитуд, ключ `(pub_id, sta)` |
-| `--metadata-dir` | `metadata/` | папка с FDSNStationXML для `remove_response` |
+| `--waveforms` | `workspace/data_processors/output/geofiles` | папка с переименованными формами волн (см. `data_processors/geofile_processor.py`) |
+| `--cache-amp` | `workspace/magnitude/output/amps_filter_cache.csv` | CSV-кэш амплитуд, ключ `(pub_id, sta)` |
+| `--metadata-dir` | `workspace/data_processors/input/metadata` | папка с FDSNStationXML для `remove_response` |
 
 ### Формула ML и станционные поправки
 
@@ -172,7 +172,7 @@ python core/ml_filter_v5.py --ml-outlier-sigma 2.0 --n-min-sta 5
 
 ## Кэширование амплитуд
 
-Кэш — CSV с колонками `pub_id,sta,A` (метры, не нм), хранится по пути `--cache-amp` (по умолчанию `amps_wa_v3_weight_ml15.csv` в корне репозитория). При повторном запуске кэш подгружается целиком, MSEED не перечитывается вообще — вычисление ML и фильтрация XML занимают секунды. Пересборка — `--rebuild-cache`.
+Кэш — CSV с колонками `pub_id,sta,A` (метры, не нм), хранится по пути `--cache-amp` (по умолчанию `workspace/magnitude/output/amps_filter_cache.csv`). При повторном запуске кэш подгружается целиком, MSEED не перечитывается вообще — вычисление ML и фильтрация XML занимают секунды. Пересборка — `--rebuild-cache`.
 
 Кэш специфичен для набора событий во входном XML: при смене `--assoc-in` на XML с другими событиями кэш нужно пересобрать (иначе новые `pub_id` просто не найдутся в кэше и получат `A=None`). Смена `--ml-threshold`, `--sta-corrections`, `--exclude-stations`, коэффициентов формулы (`--ml-b-log`/`--ml-b-lin`/`--ml-c`) или порогов агрегации (`--n-min-sta`, `--ml-outlier-sigma`, `--a-nm-min`, `--a-max-nm`) пересборки **не требует** — это только постобработка уже закэшированных сырых амплитуд. Пересборка нужна, только если меняется то, что влияет на саму амплитуду до кэша: `--win-sec`, `--read-margin-sec`, `--max-group-span-sec`, `--no-bandpass`/`--bp-freqmin`/`--bp-freqmax`, `--comp-priority`, `--metadata-dir`, `--waveforms`.
 

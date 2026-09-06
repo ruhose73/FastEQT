@@ -30,8 +30,8 @@ Ndef, Nsta, Author, OrigID, Sta, Phase, Time, SNR, Amp, Magnitude, ArrID),
 Перед отправкой в НИИ стоит сверить пару событий с примером глазами.
 
 Использование:
-    python core/export_bul.py --year 2025 --month 1 --out bul_out/2025_01.BUL
-    python core/export_bul.py --min-stations 4 --out bul_out/all.BUL
+    python core/export_bul.py --year 2025 --month 1 --out workspace/bulletin/output/2025_01.BUL
+    python core/export_bul.py --min-stations 4 --out workspace/bulletin/output/all.BUL
 """
 
 import argparse
@@ -49,9 +49,9 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 DEFAULT_ASSOC     = v2.DEFAULT_ASSOC
 DEFAULT_AMPS      = v2.DEFAULT_AMPS
-DEFAULT_PROB_DIR  = os.path.join(_ROOT, "memory-25", "assoc_input_cpu_2")
-DEFAULT_METADATA_DIR   = os.path.join(_ROOT, "metadata-25")
-DEFAULT_OUTPUT_CPU_DIR = os.path.join(_ROOT, "memory-25", "output_cpu")
+DEFAULT_PROB_DIR  = os.path.join(_ROOT, "workspace", "associator", "input")
+DEFAULT_METADATA_DIR   = os.path.join(_ROOT, "workspace", "data_processors", "input", "metadata")
+DEFAULT_OUTPUT_CPU_DIR = os.path.join(_ROOT, "workspace", "detector", "output")
 
 AUTHOR = "EQT"
 KM_PER_DEG = 111.195

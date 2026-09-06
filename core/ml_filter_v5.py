@@ -29,6 +29,15 @@ S   = станционная поправка (0 по умолчанию).
     python core/ml_filter_v5.py --ml-outlier-sigma 2.0 --n-min-sta 5
 """
 
+import sys
+
+# Форсируем UTF-8 на stdout/stderr — в help-строках есть не-ASCII (σ, кириллица);
+# без этого argparse.print_help() падает с UnicodeEncodeError в консоли по
+# умолчанию (cp1251) на Windows.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 import argparse
 import copy
 import csv
@@ -53,11 +62,11 @@ import numpy as np
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 DEFAULT_ASSOC_IN  = os.path.join(
-    _ROOT, 'data-in-memory', 'gpu_splimit_45_may_v2', 'assoc_output_lim_weight_v2', 'associations.xml')
+    _ROOT, 'workspace', 'associator', 'output', 'associations.xml')
 DEFAULT_ASSOC_OUT = None   # рядом с assoc-in: associations_ml<thr>.xml
-DEFAULT_WAVEFORMS = os.path.join(_ROOT, 'geofiles')
-DEFAULT_CACHE_AMP = os.path.join(_ROOT, 'amps_wa_v3_weight_ml15.csv')
-DEFAULT_METADATA  = os.path.join(_ROOT, 'metadata')
+DEFAULT_WAVEFORMS = os.path.join(_ROOT, 'workspace', 'data_processors', 'output', 'geofiles')
+DEFAULT_CACHE_AMP = os.path.join(_ROOT, 'workspace', 'magnitude', 'output', 'amps_filter_cache.csv')
+DEFAULT_METADATA  = os.path.join(_ROOT, 'workspace', 'data_processors', 'input', 'metadata')
 DEFAULT_THRESHOLD = 1.0
 
 # ── Пространства имён QuakeML ──────────────────────────────────────────────────

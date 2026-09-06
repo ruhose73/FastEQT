@@ -83,7 +83,7 @@ IQR    = Q3 − Q1
 
 ## Выходные файлы
 
-### `--out-summary` (по умолчанию `sta_corrections_may_detail.csv`) — итоговые поправки
+### `--out-summary` (по умолчанию `workspace/magnitude/output/sta_corrections_summary.csv`) — итоговые поправки
 Формат совпадает с `sta_corrections_dyagilev2023.csv`. Используется напрямую
 в `ml_filter_v5.py` через `--sta-corrections`.
 
@@ -93,8 +93,6 @@ BEYR,0.231
 SOC,-0.042
 ...
 ```
-
-⚠️ Обратите внимание: `DEFAULT_OUT_DETAIL` и `DEFAULT_OUT_SUMMARY` в коде **совпадают** (`sta_corrections_may_detail.csv`) — без явного `--out-detail`/`--out-summary` детальный CSV будет перезаписан итоговым (в примерах запуска ниже это обходят через `--out-summary sta_corrections_new.csv`).
 
 ### `--out-detail` — детальные поправки по событиям
 
@@ -177,14 +175,14 @@ SOC        18        0      -0.042           -0.042
 
 | Флаг | По умолчанию | Назначение |
 |---|---|---|
-| `--assoc-in` | `data-in-memory/gpu_splimit_45_may/assoc_output_lim/associations.xml` | входной XML ассоциатора — **на одно поколение старее**, чем дефолт в `ml_filter_v5.py` (`.../gpu_splimit_45_may_v2/assoc_output_lim_weight_v2/...`); при работе с `_v2`/`_weight`/`_filter` выходами нужно указывать явно |
+| `--assoc-in` | `workspace/associator/output/associations.xml` | входной XML ассоциатора |
 | `--catalog` | `catalog.xlsx` | каталог событий |
-| `--waveforms` | `geofiles/` | папка с переименованными формами волн |
-| `--metadata-dir` | `metadata/` | FDSNStationXML для `remove_response` |
-| `--stations-dir` | `json/` | координаты станций, `station_*.json` |
-| `--cache-amp` | `amps_sta__may_corr.csv` | CSV-кэш амплитуд (ключ `pub_id, sta`) — отдельный от кэша `ml_filter_v5.py` |
-| `--out-detail` | `sta_corrections_may_detail.csv` | детальный CSV (см. предупреждение выше про совпадение имён) |
-| `--out-summary` | `sta_corrections_may_detail.csv` | итоговый CSV `station,S` |
+| `--waveforms` | `workspace/data_processors/output/geofiles` | папка с переименованными формами волн |
+| `--metadata-dir` | `workspace/data_processors/input/metadata` | FDSNStationXML для `remove_response` |
+| `--stations-dir` | `workspace/data_processors/output` | координаты станций, `station_*.json` |
+| `--cache-amp` | `workspace/magnitude/output/amps_corrections_cache.csv` | CSV-кэш амплитуд (ключ `pub_id, sta`) — отдельный от кэша `ml_filter_v5.py` |
+| `--out-detail` | `workspace/magnitude/output/sta_corrections_detail.csv` | детальный CSV |
+| `--out-summary` | `workspace/magnitude/output/sta_corrections_summary.csv` | итоговый CSV `station,S` |
 | `--rebuild-cache` | выкл. | пересобрать кэш амплитуд |
 | `--year` / `--month` | нет | фильтр каталога |
 | `--min-ms` / `--max-ms` | нет | фильтр каталога по Ms (например, исключить сильные события, где формула насыщается) |
@@ -204,7 +202,7 @@ SOC        18        0      -0.042           -0.042
 | `--no-bandpass` | выкл. (фильтр включён) | отключить полосу 1–5 Гц |
 | `--exclude-stations` | нет | исключить станции — **только для `--diag-ml`** |
 | `--diag-ml` | выкл. | диагностика ML vs Ms по совпавшим событиям, требует готового кэша |
-| `--sta-corrections` | = `--out-summary` (`sta_corrections_may_detail.csv`) | поправки для `--diag-ml` |
+| `--sta-corrections` | = `--out-summary` (`workspace/magnitude/output/sta_corrections_summary.csv`) | поправки для `--diag-ml` |
 
 ---
 
@@ -231,10 +229,10 @@ python core/sta_correction_estimator.py --year 2024 --month 1 --use-coords
 # Пересобрать кэш амплитуд
 python core/sta_correction_estimator.py --rebuild-cache --year 2024 --month 1
 
-# Кастомные пути (актуальный "weight" прогон вместо дефолтного старого)
+# Кастомные пути (например, другой прогон ассоциатора)
 python core/sta_correction_estimator.py `
-  --assoc-in data-in-memory/gpu_splimit_45_may_v2/assoc_output_lim_weight_v2/associations.xml `
-  --out-summary sta_corrections_new.csv `
+  --assoc-in workspace/associator/output/associations_weight_v2.xml `
+  --out-summary workspace/magnitude/output/sta_corrections_new.csv `
   --year 2024 --month 1
 
 # Ослабить IQR-фильтр (больше выбросов оставить)
@@ -266,12 +264,13 @@ python core/ml_filter_v5.py `
 
 | Параметр | Значение | Аргумент |
 |---|---|---|
-| XML ассоциатора | `data-in-memory/gpu_splimit_45_may/assoc_output_lim/associations.xml` | `--assoc-in` |
+| XML ассоциатора | `workspace/associator/output/associations.xml` | `--assoc-in` |
 | Каталог | `catalog.xlsx` | `--catalog` |
-| Формы волн | `geofiles/` | `--waveforms` |
-| StationXML | `metadata/` | `--metadata-dir` |
-| Кэш амплитуд | `amps_sta__may_corr.csv` | `--cache-amp` |
-| Итоговый/детальный CSV | `sta_corrections_may_detail.csv` (оба — см. предупреждение выше) | `--out-summary` / `--out-detail` |
+| Формы волн | `workspace/data_processors/output/geofiles` | `--waveforms` |
+| StationXML | `workspace/data_processors/input/metadata` | `--metadata-dir` |
+| Кэш амплитуд | `workspace/magnitude/output/amps_corrections_cache.csv` | `--cache-amp` |
+| Детальный CSV | `workspace/magnitude/output/sta_corrections_detail.csv` | `--out-detail` |
+| Итоговый CSV | `workspace/magnitude/output/sta_corrections_summary.csv` | `--out-summary` |
 | Окно матчинга | 15 с | `--match-win` |
 | Мин. событий | 6 | `--min-events` |
 | IQR множитель | 1.5 | `--iqr-k` |
@@ -288,7 +287,7 @@ python core/ml_filter_v5.py `
 ## Важные замечания
 
 - `_PAZ_WA` (полюса/нули/чувствительность Wood-Anderson) — определялся в коде, но нигде не использовался (WA-симуляция не применяется в этом скрипте, как и в `ml_filter_v5.py`: формула 5б ожидает смещение грунта, не WA-амплитуду); удалён 2026-09-06 (`production-plan.md` Трек 1), в `legacy/sta_correction_estimator.py` ещё присутствует.
-- Кэш `amps_sta__may_corr.csv` отдельный от кэша `ml_filter_v5` (`amps_wa_v3_weight_ml15.csv` по актуальному дефолту `ml_filter_v5.py`). Это разные наборы событий: здесь только каталожные события с известной Ms, там — все события ассоциатора.
+- Кэш `--cache-amp` (по умолчанию `workspace/magnitude/output/amps_corrections_cache.csv`) отдельный от кэша `ml_filter_v5.py` (`workspace/magnitude/output/amps_filter_cache.csv`). Это разные наборы событий: здесь только каталожные события с известной Ms, там — все события ассоциатора.
 - При смене `--assoc-in`, `--year/--month` или `--use-coords` нужен `--rebuild-cache` (набор пар `(pub_id, sta)` меняется). При смене `--amp-ratio-max/min`, `--lg-a-min/max` или `--win-sec` — **не нужен** (кэш хранит сырые амплитуды в метрах, все фильтры применяются позже, на этапе `compute_corrections`).
 - **Amplitude ratio filter** (`--amp-ratio-max 5.0`): удаляет измерения где `A_nm > 5×` ожидаемой амплитуды по каталожной Ms и R. Ловит шум и сбои `remove_response`, но **не** затрагивает станции с аномально низкой амплитудой (`--amp-ratio-min` выключен по умолчанию — если понадобится симметричный фильтр, включать его нужно отдельно).
 - Основной расчёт поправок (`compute_raw_ml`/`compute_corrections`) **не фильтрует по нижнему порогу амплитуды** (`A_NM_MIN` там не применяется) — только по `A_nm > A_MAX_NM`. Нижний порог используется исключительно в `--diag-ml` (v2-путь).

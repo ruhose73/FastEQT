@@ -1,6 +1,7 @@
 """
 compare_bul.py — сравнение двух бюллетеней в формате IMS1.0:SHORT/LONG
-(bul/*.BUL от ГС РАН и bul_out/*.BUL из export_bul.py) по времени и станциям.
+(workspace/bulletin/input/*.BUL от ГС РАН и workspace/bulletin/output/*.BUL
+из export_bul.py) по времени и станциям.
 
 Не трогает XML/CSV пайплайна — читает напрямую .BUL файлы, используя ту же
 раскладку колонок Origin/Phase Block (IDC-3.4.1Rev1, см. export_bul.py):
@@ -14,8 +15,8 @@ compare_bul.py — сравнение двух бюллетеней в форм�
 по времени).
 
 Использование:
-    python core/compare_bul.py --reference bul/2025_jan-mar_NCAU.BUL \
-                                --candidate bul_out/2025_q1.BUL \
+    python core/compare_bul.py --reference workspace/bulletin/input/2025_jan-mar_NCAU.BUL \
+                                --candidate workspace/bulletin/output/2025_q1.BUL \
                                 --window 60 --min-shared 1
     python core/compare_bul.py ... --show-missed --out-csv compare.csv
 """
@@ -196,9 +197,9 @@ def main():
     parser = argparse.ArgumentParser(
         description="Сравнение двух бюллетеней IMS1.0 по времени и станциям")
     parser.add_argument('--reference', required=True,
-                        help="Эталонный бюллетень (напр. bul/2025_jan-mar_NCAU.BUL)")
+                        help="Эталонный бюллетень (напр. workspace/bulletin/input/2025_jan-mar_NCAU.BUL)")
     parser.add_argument('--candidate', required=True,
-                        help="Наш бюллетень (напр. bul_out/2025_q1.BUL)")
+                        help="Наш бюллетень (напр. workspace/bulletin/output/2025_q1.BUL)")
     parser.add_argument('--window', type=float, default=60.0,
                         help="Допуск по времени, сек (default: 60)")
     parser.add_argument('--min-shared', type=int, default=1,

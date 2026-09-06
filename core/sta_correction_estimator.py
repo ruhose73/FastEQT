@@ -59,14 +59,14 @@ import openpyxl
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-DEFAULT_ASSOC_IN   = os.path.join(_ROOT, 'data-in-memory', 'gpu_splimit_45_may', 'assoc_output_lim', 'associations.xml')
+DEFAULT_ASSOC_IN   = os.path.join(_ROOT, 'workspace', 'associator', 'output', 'associations.xml')
 DEFAULT_CATALOG    = os.path.join(_ROOT, 'catalog.xlsx')
-DEFAULT_WAVEFORMS  = os.path.join(_ROOT, 'geofiles')
-DEFAULT_METADATA   = os.path.join(_ROOT, 'metadata')
-DEFAULT_STA_DIR    = os.path.join(_ROOT, 'json')
-DEFAULT_CACHE_AMP  = os.path.join(_ROOT, 'amps_sta__may_corr.csv')
-DEFAULT_OUT_DETAIL  = os.path.join(_ROOT, 'sta_corrections_may_detail.csv')
-DEFAULT_OUT_SUMMARY = os.path.join(_ROOT, 'sta_corrections_may_detail.csv')
+DEFAULT_WAVEFORMS  = os.path.join(_ROOT, 'workspace', 'data_processors', 'output', 'geofiles')
+DEFAULT_METADATA   = os.path.join(_ROOT, 'workspace', 'data_processors', 'input', 'metadata')
+DEFAULT_STA_DIR    = os.path.join(_ROOT, 'workspace', 'data_processors', 'output')
+DEFAULT_CACHE_AMP  = os.path.join(_ROOT, 'workspace', 'magnitude', 'output', 'amps_corrections_cache.csv')
+DEFAULT_OUT_DETAIL  = os.path.join(_ROOT, 'workspace', 'magnitude', 'output', 'sta_corrections_detail.csv')
+DEFAULT_OUT_SUMMARY = os.path.join(_ROOT, 'workspace', 'magnitude', 'output', 'sta_corrections_summary.csv')
 
 # ── Константы формулы (Дягилев et al. 2023, формула 5б) ──────────────────────
 
@@ -1034,10 +1034,10 @@ def main():
     parser.add_argument('--diag-ml',     action='store_true',
                         help='Диагностика: вычисленный ML vs Ms каталога для каждого совпавшего '
                              'события. Загружает кэш амплитуд и поправки, выводит таблицу, '
-                             'без записи файлов. Требует готового кэша (amps_sta_corr.csv).')
+                             'без записи файлов. Требует готового кэша амплитуд (--cache-amp).')
     parser.add_argument('--sta-corrections', default=DEFAULT_OUT_SUMMARY,
                         help='CSV станционных поправок для режима --diag-ml (station,S). '
-                             'По умолчанию: sta_corrections_computed.csv')
+                             f'По умолчанию: {DEFAULT_OUT_SUMMARY}')
     args = parser.parse_args()
 
     VP          = args.vp

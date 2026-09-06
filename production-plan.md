@@ -115,6 +115,25 @@
 
 ---
 
+## Итог сессии (продолжение, 2026-09-06) — `legacy/associator_v1.py`, синхронизация с origin, `workspace/`
+
+1. **`legacy/associator_v1.py` удалён** — подтверждено побайтовым сравнением, действительно идентичен `legacy/associator_v3.py` (см. таблицу 1.1), информационной ценности не нёс. `legacy/README.md` поправлен.
+2. **Обнаружен и исправлен тот же класс UnicodeEncodeError ещё в двух файлах, не проверявшихся ранее** — `ml_filter_v5.py`/`validate_associator_v2.py` падали на символе `σ` в help-строке в cp1251-консоли (проверка из предыдущего прохода делалась только под `PYTHONIOENCODING=utf-8`, поэтому не поймала). Исправлено тем же способом (`stdout`/`stderr.reconfigure`).
+3. **Синхронизация с `origin/main`** — локальный `main` отставал на 1 коммит (`d6957d3`, отправлен пользователем в отдельной сессии/с другой машины). Коммит содержал реальную полезную работу (портируемые относительные пути в `data_processors/main.py` вместо абсолютных институтских, `docs/INSTALL.md`, `environment_linux*.yml`, раскладка `_diag_*.py` → `diag/`), но CLI-версии `core/associator.py`/`core/cpu_pipeline.py` этой сессии заменили собой то, что правил тот коммит (он редактировал более старую/тестовую версию констант) — потерь функциональности не было (единственная содержательная деталь, `estimate_uncertainty=True` в `cpu_pipeline.py`, уже покрыта флагом `--estimate-uncertainty`). Смёржено fast-forward'ом после точечного разрешения конфликтов по этим двум файлам и по `phase_dataset`/`amps/`/`corrections/` (сохранены локальные версии).
+4. **`.gitignore` почищен**: `__pycache__/`+`*.pyc` обобщены (было расписано по отдельным путям, `core/__pycache__` и `EQTransformer/utils/__pycache__` не были покрыты вообще — 15 `.pyc` трекались в git, untracked), исправлен регистр `CLAUDE.MD` → `CLAUDE.md` (на Windows совпадало случайно из-за нечувствительности ФС к регистру, на Linux/Mac не сработало бы — поведение (файл игнорируется) сохранено, просто теперь работает кроссплатформенно).
+5. **Введена `workspace/`** — единая рабочая директория для входа/выхода пайплайна (решение пользователя: разбросанные `amps/`, `bul/`, `bul_out/`, `corrections/`, `json/`, `json2/`, `json-25/`, `metadata/`, `metadata-25/`, `memory-25/` и одиночные файлы в корне — не гитигнорить по одному, а свести к одной закоммиченной структуре директорий с гитигнорящимся содержимым). Структура — по решению пользователя: одна папка на стадию пайплайна, `input/`/`output/` внутри каждой:
+   ```
+   workspace/{data_processors,detector,associator,magnitude,validation,bulletin}/{input,output}
+   ```
+   Содержимое `input/`/`output/` — в `.gitignore` (кроме `.gitkeep`), структура папок закоммичена. Между стадиями данные не дублируются вручную — выход одной стадии по дефолту читается как вход следующей (`workspace/README.md` объясняет, где `input/` реально используется, а где существует только для явного оверрайда). Все дефолтные пути в `core/detector.py`/`cpu_pipeline.py`/`gpu_pipeline.py`/`associator.py`/`sta_correction_estimator.py`/`ml_filter_v5.py`/`validate_associator_v2.py`/`export_bul.py` и в `data_processors/main.py` переведены на `workspace/...` (было — `data-in-memory/`, `geofiles/`, `json/`, `metadata/`, `memory-25/`, `metadata-25/`, разрозненные `amps_*.csv`/`sta_corrections_*.csv`/`catalog.xlsx`-соседние файлы в корне). `catalog.xlsx` и `ModelsAndSampleData/` остались в корне репозитория — не привязаны к одной стадии.
+   - Побочно найден и исправлен реальный баг: `DEFAULT_OUT_DETAIL`/`DEFAULT_OUT_SUMMARY` в `sta_correction_estimator.py` указывали на один и тот же файл — без явных `--out-detail`/`--out-summary` детальный CSV молча перезаписывался итоговым сразу после записи.
+   - Побочно найдена и исправлена коллизия: при первой раскладке путей `ml_filter_v5.py` и `sta_correction_estimator.py` получили одинаковый дефолт `--cache-amp` (`workspace/magnitude/output/amps_cache.csv`) — разведены на `amps_filter_cache.csv`/`amps_corrections_cache.csv` (это разные наборы событий, см. п.1.1).
+   - `--help` перепроверен на всех девяти CLI-файлов пайплайна под `envs/eqt3/python.exe` без `PYTHONIOENCODING` — exit 0 на всех.
+   - Физическая миграция уже существующих на диске данных (`data-in-memory/`, `amps/`, `corrections/`, `bul/`, `bul_out/`, `json*/`, `metadata*/`, `memory-25/` — до нескольких ГБ) в `workspace/` **не выполнена** — только новые дефолты путей в коде. Существующие данные пользователь мигрирует сам (или явно попросит) в удобном темпе; CLI-флаги позволяют указать старые пути явно в любой момент.
+   - `CLAUDE.md` обновлён под фактическое состояние (сильно отстал ещё до этой сессии: упоминал `ml_filter_v4.py` как текущий, несуществующую уже двухцепочечную `detector.py`, «core/ без CLI») — Project Structure, порядок пайплайна, gotchas #8/#11/#12/#14/#15, ссылка на `docs/doc-plan.md` (был указан как «repo root», физически лежит в `docs/`).
+
+---
+
 ## Трек 2 — Полностью автоматический realtime-пайплайн
 
 ### Цель

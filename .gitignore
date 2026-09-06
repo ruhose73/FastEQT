@@ -4,6 +4,19 @@ __pycache__/
 /build
 EQTransformer.egg-info/
 
+# workspace/ — структура (input/output на стадию) закоммичена, содержимое нет
+workspace/*/input/*
+workspace/*/output/*
+!workspace/*/input/.gitkeep
+!workspace/*/output/.gitkeep
+
+time_tracks.pkl
+updates.md
+CLAUDE.md
+*.xlsx
+
+# Старые (до workspace/, production-plan.md Трек 1) пути данных — на диске
+# у части пользователей ещё могут существовать, оставлено для подстраховки
 /detections_hdfs
 /geo-files
 /json2/
@@ -22,13 +35,11 @@ EQTransformer.egg-info/
 data-in-memory
 data_raw
 /data_raw
-
-# Данные обработки/результатов — не часть кода проекта, не коммитим
 amps/
 corrections/
 phase_dataset
-
-time_tracks.pkl
-updates.md
-CLAUDE.md
-*.xlsx
+/bul
+/bul_out
+/json-25
+/metadata-25
+/memory-25

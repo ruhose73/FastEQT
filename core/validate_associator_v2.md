@@ -121,7 +121,7 @@ ML требует `--amps` (CSV `pub_id,sta,A` — совместимый по �
 
 | Флаг | По умолчанию | Назначение |
 |---|---|---|
-| `--assoc` | `memory-25/assoc_output_cpu_2/associations_ml1p5.xml` | входной XML ассоциатора |
+| `--assoc` | `workspace/magnitude/output/associations_ml.xml` | входной XML ассоциатора (после `ml_filter_v5.py`) |
 | `--catalog` | `catalog.xlsx` | эталонный каталог |
 | `--window` | `60` с | допуск сравнения T0 с каталогом |
 | `--vp` / `--vs` | `6.0` / `3.4883` км/с | скорости коровой модели (Pg/Sg) |
@@ -130,7 +130,7 @@ ML требует `--amps` (CSV `pub_id,sta,A` — совместимый по �
 | `--min-mag` | нет | минимальная Ms каталога |
 | `--r-min` / `--r-max` | `20.0` / нет | границы R (км) для включения станции в оценку T0 |
 | `--dual-vel` | выкл. | двухскоростная модель Pg/Sg ↔ Pn/Sn (порог `R_PN_THR=150` км) |
-| `--amps` | `amps_wa_ml_v2_15.csv` | CSV амплитуд для ML |
+| `--amps` | `workspace/magnitude/output/amps_filter_cache.csv` | CSV амплитуд для ML |
 | `--no-amps` | выкл. | не считать ML вообще |
 | `--sta-corrections` | нет | CSV станционных поправок `station,S` |
 | `--prob-dir` | нет | папка `assoc_input` для `ot_probw`/`ot_probsnr` |

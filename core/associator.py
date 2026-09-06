@@ -43,9 +43,9 @@ from EQTransformer.utils.associator import run_associator_v2
 
 # ─── Конфигурация (значения по умолчанию для CLI-флагов) ─────────────────────
 
-SOURCE_DIR = os.path.join(_ROOT, 'data-in-memory', "gpu_splimit_45_may_v2", "output_detector")
-INPUT_DIR  = os.path.join(_ROOT, 'data-in-memory', "gpu_splimit_45_may_v2", "assoc_input")
-OUTPUT_DIR = os.path.join(_ROOT, 'data-in-memory', "gpu_splimit_45_may_v2", "assoc_output_lim_weight_v3")
+SOURCE_DIR = os.path.join(_ROOT, 'workspace', 'detector', 'output')
+INPUT_DIR  = os.path.join(_ROOT, 'workspace', 'associator', 'input')
+OUTPUT_DIR = os.path.join(_ROOT, 'workspace', 'associator', 'output')
 
 # v5-обработанные станции. Альтернативный, более короткий состав, который
 # пробовали раньше ('BEYR,DOMR,GLDR,GOYR,GRYR,GUZR,LABN,MRNR,PYA1,SHA1,SOC,

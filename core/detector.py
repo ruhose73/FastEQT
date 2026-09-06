@@ -96,14 +96,17 @@ from EQTransformer.core.predictor import predictor_mem_non_hdf_load_model_v6
 # ─── Конфигурация (значения по умолчанию для CLI-флагов) ─────────────────────
 
 MODEL_PATH      = os.path.join(_ROOT, "ModelsAndSampleData", "EqT_original_model.h5")
-OUTPUT_BASE_DIR = os.path.join(_ROOT, "data-in-memory", "output_gpu")
-LOG_FILE        = os.path.join(_ROOT, "data-in-memory", "processing_log.csv")
+OUTPUT_BASE_DIR = os.path.join(_ROOT, "workspace", "detector", "output")
+LOG_FILE        = os.path.join(_ROOT, "workspace", "detector", "output", "processing_log.csv")
 
 DATE_FROM = "2024-01-01"
 DATE_TO   = "2024-02-01"   # не включается
 
-_IN = os.path.join(_ROOT, "data-in-memory", "input")
-_JS = os.path.join(_ROOT, "json")
+# По умолчанию — выход data_processors/main.py (workspace/, production-plan.md
+# Трек 1); workspace/detector/input/ существует отдельно для случая, когда
+# волновые файлы/station_*.json кладутся туда напрямую, минуя data_processors.
+_IN = os.path.join(_ROOT, "workspace", "data_processors", "output", "geofiles")
+_JS = os.path.join(_ROOT, "workspace", "data_processors", "output")
 
 # Список станций для прямого запуска (python core/detector.py).
 # Оптимальный состав: recall 33/49 (без NCK/SRGR/GOFR — они снижают до 32/49).

@@ -5,10 +5,11 @@ from metadata_processor import combine_inventories_to_json
 from geofile_processor import geofile_processor
 
 # Путь к папке с XML файлами и выходному JSON файлу
-metadata_xml_folder_path = 'metadata'
-json_stationlist_output_path = 'json/station_list_RU.json'
-geofile_input_directory = 'data_raw'
-geofile_output_directory = 'geofiles'
+# (production-plan.md, Трек 1 — единая рабочая директория workspace/)
+metadata_xml_folder_path = 'workspace/data_processors/input/metadata'
+json_stationlist_output_path = 'workspace/data_processors/output/station_list_RU.json'
+geofile_input_directory = 'workspace/data_processors/input/raw'
+geofile_output_directory = 'workspace/data_processors/output/geofiles'
 
 metadata_xml_exist = os.path.exists(metadata_xml_folder_path)
 json_stationlist_exist = os.path.exists(json_stationlist_output_path)
