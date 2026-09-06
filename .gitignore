@@ -10,8 +10,11 @@ workspace/*/output/*
 !workspace/*/input/.gitkeep
 !workspace/*/output/.gitkeep
 
+# context/ — личные рабочие заметки/планы (production-plan.md, patent_candidates.md,
+# learning.md, updates.md и т.п.) — не для git, только локально
+/context/
+
 time_tracks.pkl
-updates.md
 CLAUDE.md
 *.xlsx
 
