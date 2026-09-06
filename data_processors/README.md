@@ -2,7 +2,7 @@
 
 Скрипты для преобразования сырых сейсмических данных (SDS-архив) и метаданных станций (StationXML) в формат, пригодный для обработки пайплайном EQT.
 
-Запускать из папки `data_processors/`: `python main.py` (пути внутри заданы относительно этой папки).
+Запускать из корня репозитория: `python data_processors/main.py` (пути внутри — `workspace/...`, всегда резолвятся от корня через `_ROOT`, не зависят от того, откуда запущен скрипт).
 
 ---
 
@@ -12,19 +12,21 @@
 
 Координирует запуск двух независимых процессоров: метаданных станций и сейсмических файлов. Каждый шаг выполняется только если **все** связанные с ним пути уже существуют — никакие директории или файлы `main.py` сам не создаёт.
 
-**Настроенные пути** (жёстко заданы в начале файла):
+**Настроенные пути** (жёстко заданы в начале файла, `_ROOT`-абсолютные):
 
 ```python
-metadata_xml_folder_path     = '../../../../science/geodata/Metadata/RU'
-json_stationlist_output_path = 'json2/station_list_RU.json'
-geofile_input_directory      = '../../../science/geodata/SDS/2024/RU'
-geofile_output_directory     = 'geofiles'
+metadata_xml_folder_path     = os.path.join(_ROOT, 'workspace', 'data_processors', 'input', 'metadata')
+json_stationlist_output_path = os.path.join(_ROOT, 'workspace', 'data_processors', 'output', 'station_list_RU.json')
+geofile_input_directory      = os.path.join(_ROOT, 'workspace', 'data_processors', 'input', 'raw')
+geofile_output_directory     = os.path.join(_ROOT, 'workspace', 'data_processors', 'output', 'geofiles')
 ```
 
 **Шаг 1 — Метаданные:**
-Условие запуска — `metadata_xml_exist AND json_stationlist_exist`, где `json_stationlist_exist = os.path.exists(json_stationlist_output_path)`.
+Условие запуска — только `metadata_xml_exist` (упрощено с `metadata_xml_exist AND json_stationlist_exist` до Трека 1 — проверка второго условия убрана вместе с изменением путей).
 
-⚠️ **Важная особенность:** это проверка существования **выходного** JSON-файла, а не его директории. `combine_inventories_to_json()` открывает файл в режиме `'w'`, так что для первого запуска на новом месте файл `json2/station_list_RU.json` нужно создать заранее вручную (пустым), иначе шаг молча пропускается с сообщением `JSON False`.
+⚠️ **Важная особенность:** `combine_inventories_to_json()` открывает выходной файл в режиме `'w'` — для первого запуска на новом месте директория `workspace/data_processors/output/` должна существовать (создаётся автоматически при клонировании репозитория, см. `workspace/README.md`), сам файл создаст скрипт.
+
+⚠️ **Известный разрыв формата (не устранён, не в рамках Трека 1):** `combine_inventories_to_json()` вызывается **один раз на всю папку метаданных** и пишет **один** агрегированный JSON (`{STA1: {...}, STA2: {...}, ...}` — формат ниже). Но `core/detector.py`/`core/associator.py`/`core/sta_correction_estimator.py` ожидают **отдельный файл на станцию** (`station_{CODE}.json`, та же внутренняя схема, но с одним ключом) — см. `--json-dir` в `core/detector.md`. Этот шаг сейчас не производит то, что реально потребляет остальной пайплайн; файлы `station_{CODE}.json` в `workspace/data_processors/output/` на практике готовятся отдельно (не этим скриптом). Не чинится в рамках документации — нужно решение, добавлять ли сюда цикл «один XML-файл станции → один выходной JSON» или менять потребителей.
 
 **Шаг 2 — Сейсмические файлы:**
 Условие запуска — обе директории (`geofile_input_directory`, `geofile_output_directory`) уже существуют. Список станций берётся автоматически: `get_directories()` возвращает имена всех подпапок первого уровня во входной SDS-директории (это и есть коды станций), и они передаются в `geofile_processor()`.
@@ -116,4 +118,4 @@ RU.SOC.U4.BHE.D.2024.001  →  RU.SOC.U4.BHE.D__20240401T000000Z__20240402T00000
 
 Результат сохраняется одним JSON-файлом (`json.dump(..., indent=4)`) по пути `json_output_path`; если директория назначения не существует, перехватывается `FileNotFoundError` с понятным сообщением об ошибке.
 
-Готовый JSON-файл (например, `json2/station_list_RU.json`) используется детектором и ассоциаторами для геолокации станций и вывода координат в CSV.
+Готовый агрегированный JSON (`workspace/data_processors/output/station_list_RU.json`) сам по себе детектором/ассоциатором не читается — см. предупреждение о разрыве формата выше: им реально нужны отдельные `station_{CODE}.json`.

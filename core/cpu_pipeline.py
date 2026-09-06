@@ -13,17 +13,11 @@ cpu_pipeline.py — параллельная обработка станций �
 
 Модель загружается 1 раз на воркер (initializer паттерн).
 
-Все параметры теперь задаются флагами командной строки (см. --help);
-значения по умолчанию соответствуют прежним хардкод-константам.
-
-Правки этой ревизии (production-plan.md, Трек 1, п.1.3, 2026-09-06),
-внесены как новый файл (предыдущая версия — legacy/cpu_pipeline.py):
-  - месяц/год (TARGET_MONTH/TARGET_YEAR) заменены на --date-from/--date-to —
-    унификация с gpu_pipeline.py, более общий случай;
-  - список станций — не список кортежей в коде, а флаг --stations
-    (коды через запятую), путь достраивается из --input-dir/--json-dir;
-  - пороги детекции (detection_threshold и т.д.), поднятые в detector.py
-    до параметров process_station_v3, теперь тоже CLI-флаги здесь.
+Все параметры задаются флагами командной строки (см. --help): диапазон
+дат — --date-from/--date-to; список станций — --stations (коды через
+запятую), путь достраивается из --input-dir/--json-dir; пороги детекции
+(detection_threshold и т. д.) — CLI-флаги, пробрасываются в
+process_station_v3 в detector.py.
 """
 
 import argparse
@@ -54,9 +48,9 @@ MAX_WORKERS = 4
 # 4 воркера × 3 потока = 12 потоков (все ядра CPU).
 TF_THREADS_PER_WORKER = 3
 
-# По умолчанию — выход data_processors/main.py (workspace/, production-plan.md
-# Трек 1); workspace/detector/input/ существует отдельно для случая, когда
-# волновые файлы/station_*.json кладутся туда напрямую, минуя data_processors.
+# По умолчанию — выход data_processors/main.py; workspace/detector/input/
+# существует отдельно для случая, когда волновые файлы/station_*.json
+# кладутся туда напрямую, минуя data_processors.
 _IN = os.path.join(_ROOT, "workspace", "data_processors", "output", "geofiles")
 _JS = os.path.join(_ROOT, "workspace", "data_processors", "output")
 

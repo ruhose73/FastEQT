@@ -6,12 +6,8 @@
   - X_prediction_results.csv
   - figures/  (до 10 графиков EQTransformer на станцию)
 
-Обновлено (2026-09-06, production-plan.md, Трек 1) — старая V6-цепочка
-(geofile_splitter_multi_chanels_v2/preproc_sequential_v4) удалена из
-core/detector.py как небезопасная (см. detector.py); этот скрипт переведён
-на geofile_splitter_multi_chanels_v3/preproc_sequential_v5 (та же V7-цепочка,
-что использует прод). Поведение по существу не изменилось — только более
-корректный ресемплинг внутри preprocessorV7_mem.
+Использует geofile_splitter_multi_chanels_v3/preproc_sequential_v5 — ту же
+цепочку предобработки, что и продакшн-детектор (core/detector.py).
 """
 
 import os

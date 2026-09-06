@@ -4,7 +4,7 @@
 
 Параллельно обрабатывает список станций (SEED → CSV детекций) **на CPU**, когда GPU недоступен или занят другой задачей. Собственной логики детекции не содержит — загружает `core/detector.py` через `importlib` и вызывает `process_station_v3()` для каждой станции; сам `cpu_pipeline.py` отвечает только за пул процессов, настройку TF под CPU-параллелизм и список станций/дат для конкретного прогона.
 
-**CLI есть (2026-09-06, `production-plan.md` Трек 1)** — модель, список станций, диапазон дат, число воркеров задаются флагами (`--help`); константы в начале файла остались как значения по умолчанию для этих флагов, конкретный прогон настраивается флагами, а не правкой файла. Предыдущая версия без CLI — `legacy/cpu_pipeline.py`.
+Модель, список станций, диапазон дат, число воркеров задаются флагами (`--help`); константы в начале файла остались как значения по умолчанию для этих флагов, конкретный прогон настраивается флагами, а не правкой файла. Более старая версия без CLI — `legacy/cpu_pipeline.py`.
 
 ---
 
@@ -18,7 +18,7 @@
 | TF-параллелизм | `set_inter/intra_op_parallelism_threads(tf_threads)` на воркер, чтобы процессы не соревновались за ядра | не ограничивается — конкуренция за ядра CPU внутри GPU-режима не критична |
 | `MAX_WORKERS` | подбирается под число CPU-ядер | подбирается под объём VRAM |
 
-Остальное (диапазон дат, список станций, `estimate_uncertainty` включён или нет) — не структурная разница между файлами, а то, что настраивается под конкретную задачу флагами в обоих файлах одинаково; теперь оба принимают `--date-from`/`--date-to` (унифицировано 2026-09-06 — раньше `cpu_pipeline.py` брал только целый календарный месяц через `TARGET_MONTH`/`TARGET_YEAR`).
+Остальное (диапазон дат, список станций, `estimate_uncertainty` включён или нет) — не структурная разница между файлами, а то, что настраивается под конкретную задачу флагами в обоих файлах одинаково; оба принимают `--date-from`/`--date-to`.
 
 ---
 
@@ -79,7 +79,7 @@ ProcessPoolExecutor(max_workers=MAX_WORKERS,
 2. **`preproc_sequential_v5(...)`** — потребляет генератор последовательно: берёт сегмент, передаёт в обработку, сразу пишет результат в CSV, удаляет сегмент из памяти, переходит к следующему (не накапливает весь месяц в памяти сразу); `gc.collect()` каждые 50 сегментов.
 3. На каждый сегмент вызывается **`worker_v4`**, который:
    - вызывает `preprocessorV7_mem` — предобработка (детрейд, тейпер, ресемплинг до 100 Гц, фильтрация) с корректным ресемплингом через `st.resample()` (в отличие от более старой `preprocessorV6_mem`, которая растягивала массив через `np.interp`);
-   - вызывает `predictor_mem_non_hdf_load_model_v6` с порогами `detection_threshold/P_threshold/S_threshold/keepPS/allowonlyS/spLimit/batch_size` — до 2026-09-06 зашитыми внутри `worker_v4` в `detector.py`, теперь настоящими параметрами по всей цепочке, задаются флагами `--detection-threshold`/`--p-threshold`/`--s-threshold`/`--keep-ps`(`--no-keep-ps`)/`--allow-only-s`/`--sp-limit`/`--batch-size` (см. `detector.md`).
+   - вызывает `predictor_mem_non_hdf_load_model_v6` с порогами `detection_threshold/P_threshold/S_threshold/keepPS/allowonlyS/spLimit/batch_size` — настоящими параметрами по всей цепочке, задаются флагами `--detection-threshold`/`--p-threshold`/`--s-threshold`/`--keep-ps`(`--no-keep-ps`)/`--allow-only-s`/`--sp-limit`/`--batch-size` (см. `detector.md`).
 4. **`estimate_uncertainty`/`number_of_sampling`** (флаги `--estimate-uncertainty`/`--number-of-sampling`) — параметры `process_station_v3`, пробрасываются до `predictor_mem_non_hdf_load_model_v6`. При `estimate_uncertainty=True` модель вызывается `number_of_sampling` раз в режиме `model(X, training=True)` (реальный MC Dropout, не косметический — см. правило №8 в `CLAUDE.md`) вместо одного `model.predict()`, и в CSV дополнительно попадают `detection_uncertainty`/`p_uncertainty`/`s_uncertainty` — их затем использует `core/associator.py` в режимах `UNCERTAINTY_MODE='weight'`/`'filter'`.
 
 ---

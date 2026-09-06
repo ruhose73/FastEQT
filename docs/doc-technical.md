@@ -19,12 +19,12 @@ flowchart TD
     A["data_processors/main.py<br/>metadata_processor.py + geofile_processor.py"]
     B["core/detector.py :: process_station_v3()<br/>(вызывается из cpu_pipeline.py / gpu_pipeline.py)"]
     C["core/associator.py (стейджинг)<br/>→ EQTransformer/utils/associator.py :: run_associator_v2()"]
-    D["core/ml_filter_v4.py :: main() → compute_event_ml_v2()"]
+    D["core/ml_filter_v5.py :: main() → compute_event_ml_v2()"]
     E["core/validate_associator_v2.py :: validate()"]
     F["core/export_bul.py :: process_events() + write_bul()<br/>(переиспользует validate_associator_v2.py как модуль)"]
     G["core/compare_bul.py :: match_events()"]
 
-    A -->|"geofiles/ (SDS→плоские MSEED) +<br/>json2/station_list_RU.json"| B
+    A -->|"workspace/data_processors/output/geofiles/ (SDS→плоские MSEED) +<br/>station_{CODE}.json"| B
     B -->|"CSV на станцию, CSV_HEADER (19 колонок,<br/>см. разд. 5/10)"| C
     C -->|"associations.xml (QuakeML),<br/>Y2000.phs, traceNmae_dic.json"| D
     D -->|"associations_ml<tag>.xml"| E
@@ -37,8 +37,8 @@ flowchart TD
 | Стык | Формат | Ключевые поля |
 |---|---|---|
 | SDS-архив → `data_processors/geofile_processor.py` | miniSEED, `NET.STA.LOC.CHAN.TYPE.YEAR.DAY` | суточные файлы, один канал |
-| `geofile_processor.py` → `detector.py` | miniSEED, переименованные в `..._\_\_start\_\_end` | те же данные, явные ISO-таймстемпы в имени файла |
-| `metadata_processor.py` → все модули с геолокацией | JSON `{STA: {network, channels, coords:[lat,lon,elv]}}` | путь обычно `json2/station_list_RU.json` |
+| `geofile_processor.py` → `detector.py` | miniSEED, переименованные в `..._\_\_start\_\_end` | те же данные, явные ISO-таймстемпы в имени файла, `workspace/data_processors/output/geofiles/` |
+| `metadata_processor.py` → все модули с геолокацией | JSON `{STA: {network, channels, coords:[lat,lon,elv]}}` | ⚠️ разрыв формата: `main.py` пишет один агрегированный `workspace/data_processors/output/station_list_RU.json`, а детектор/ассоциатор читают отдельные `station_{CODE}.json` той же схемы — см. `data_processors/README.md` |
 | `detector.py::process_station_v3` → `associator.py` | CSV, `CSV_HEADER` (19 колонок) | `event_start_time/end_time`, `p_arrival_time`/`s_arrival_time` + вероятности/SNR/uncertainty |
 | `associator.py` (стейджинг) → `run_associator_v2` | CSV `X_prediction_results.csv`, те же 19 колонок (отфильтрованное подмножество строк, в режиме `weight` — с переписанными вероятностями) | — |
 | `run_associator_v2` → `ml_filter_v4.py`/`validate_associator_v2.py` | QuakeML `associations.xml` (`Event`/`Origin(time only)`/`Pick(phase_hint=P\|S)`) + `Y2000.phs` (hypoinverse) + `traceNmae_dic.json` | `publicID` (`smi:local/...`, авто от ObsPy), `waveform_id.station_code` |
@@ -61,16 +61,18 @@ flowchart TD
 
 ### Оркестрация: `main.py`
 
-`data_processors/main.py` запускается из своей же директории (`python data_processors/main.py`, пути внутри заданы относительно неё) и координирует два независимых шага. Каждый шаг выполняется только если **все** нужные ему пути уже существуют — сам `main.py` ничего не создаёт:
+`data_processors/main.py` запускается из корня репозитория (`python data_processors/main.py`; пути внутри — `workspace/...`, всегда резолвятся от корня через `_ROOT`, не от текущей рабочей директории) и координирует два независимых шага. Каждый шаг выполняется только если **все** нужные ему пути уже существуют — сам `main.py` ничего не создаёт:
 
 ```python
-metadata_xml_folder_path     = '../../../../science/geodata/Metadata/RU'
-json_stationlist_output_path = 'json2/station_list_RU.json'
-geofile_input_directory      = '../../../science/geodata/SDS/2024/RU'
-geofile_output_directory     = 'geofiles'
+metadata_xml_folder_path     = workspace/data_processors/input/metadata
+json_stationlist_output_path = workspace/data_processors/output/station_list_RU.json
+geofile_input_directory      = workspace/data_processors/input/raw
+geofile_output_directory     = workspace/data_processors/output/geofiles
 ```
 
-**Шаг 1 (метаданные)** запускается при условии `metadata_xml_exist AND json_stationlist_exist`, где второе — это `os.path.exists(json_stationlist_output_path)`, то есть проверка существования **выходного** файла, а не его директории. `combine_inventories_to_json()` открывает этот файл в режиме `'w'` — для первого запуска на новом месте файл нужно создать заранее вручную пустым, иначе шаг молча пропускается с сообщением `JSON False`.
+**Шаг 1 (метаданные)** запускается при условии `metadata_xml_exist`. `combine_inventories_to_json()` открывает выходной файл в режиме `'w'` — создаёт его сам, если директория назначения существует.
+
+⚠️ **Разрыв формата:** этот шаг вызывает `combine_inventories_to_json()` один раз на всю папку метаданных и пишет **один** агрегированный JSON. Но `detector.py`/`associator.py`/`sta_correction_estimator.py` (разд. 5–8) читают **отдельный файл на станцию** (`station_{CODE}.json`, та же схема с одним ключом) через `--json-dir` — этот шаг `main.py` сейчас не производит то, что реально потребляет остальной пайплайн; на практике файлы `station_{CODE}.json` готовятся отдельно от этого скрипта.
 
 **Шаг 2 (сейсмические файлы)** запускается, если существуют обе директории — входная и выходная. Список станций не задаётся вручную: `get_directories()` возвращает имена всех подпапок первого уровня во входной SDS-директории (это и есть коды станций) и передаёт их в `geofile_processor()`.
 
@@ -225,7 +227,7 @@ flowchart LR
     W3 -. "…" .-> W4
 ```
 
-В коде это `geofile_splitter_multi_chanels_v2`/`_v3` (обе — генераторы, `yield`, не список; обрабатывают файлы одной станции по очереди, не держат в памяти весь месяц): файлы находятся регэкспом `NET.STA.LOC.CHA__start__end`, группируются по ключу `{STA}_{start}` (все каналы одного суточного файла в одну группу), группа с менее чем 2 каналами после чтения пропускается, поток нарезается на 10-минутные окна с шагом 5 минут (`window_length=600s`, `step=300s`), хвостовое окно добавляется отдельно после последнего полного шага. `st_all` явно удаляется (`finally: del st_all`) после каждой группы — пиковое потребление памяти: один суточный поток + один сегмент в обработке.
+В коде это `geofile_splitter_multi_chanels_v3` (генератор, `yield`, не список; обрабатывает файлы одной станции по очереди, не держит в памяти весь месяц) — единственная версия в `core/detector.py`: более старая `_v2` вместе со всей legacy-цепочкой обработки удалена, см. ниже. Файлы находятся регэкспом `NET.STA.LOC.CHA__start__end`, группируются по ключу `{STA}_{start}` (все каналы одного суточного файла в одну группу), группа с менее чем 2 каналами после чтения пропускается, поток нарезается на 10-минутные окна с шагом 5 минут (`window_length=600s`, `step=300s`), хвостовое окно добавляется отдельно после последнего полного шага. `st_all` явно удаляется (`finally: del st_all`) после каждой группы — пиковое потребление памяти: один суточный поток + один сегмент в обработке.
 
 ### Пороги на выходе модели
 

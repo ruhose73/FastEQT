@@ -5,18 +5,11 @@ gpu_pipeline.py — параллельная обработка станций �
 грузится один раз на процесс, memory_growth включён чтобы процессы могли
 делить VRAM).
 
-Все параметры теперь задаются флагами командной строки (см. --help);
-значения по умолчанию соответствуют прежним хардкод-константам.
-
-Правки этой ревизии (production-plan.md, Трек 1, п.1.1/1.3, 2026-09-06),
-внесены как новый файл (предыдущая версия — legacy/gpu_pipeline.py):
-  - удалена get_threads_to_use() (мёртвый код, дублировала core/threads.py,
-    нигде не вызывалась);
-  - список станций — не список кортежей в коде, а флаг --stations
-    (коды через запятую), путь достраивается из --input-dir/--json-dir;
-  - date_from/date_to, estimate_uncertainty/number_of_sampling (были
-    захардкожены True/5 в run_station) и пороги детекции, поднятые в
-    detector.py до параметров process_station_v3, теперь CLI-флаги.
+Все параметры задаются флагами командной строки (см. --help): список
+станций (--stations, коды через запятую, путь достраивается из
+--input-dir/--json-dir), диапазон дат (--date-from/--date-to), MC Dropout
+(--estimate-uncertainty/--number-of-sampling) и пороги детекции,
+пробрасываются в process_station_v3 в detector.py.
 """
 
 import argparse
@@ -35,9 +28,9 @@ OUTPUT_BASE_DIR = os.path.join(_ROOT, "workspace", "detector", "output")
 
 MAX_WORKERS = 6
 
-# По умолчанию — выход data_processors/main.py (workspace/, production-plan.md
-# Трек 1); workspace/detector/input/ существует отдельно для случая, когда
-# волновые файлы/station_*.json кладутся туда напрямую, минуя data_processors.
+# По умолчанию — выход data_processors/main.py; workspace/detector/input/
+# существует отдельно для случая, когда волновые файлы/station_*.json
+# кладутся туда напрямую, минуя data_processors.
 _IN = os.path.join(_ROOT, "workspace", "data_processors", "output", "geofiles")
 _JS = os.path.join(_ROOT, "workspace", "data_processors", "output")
 

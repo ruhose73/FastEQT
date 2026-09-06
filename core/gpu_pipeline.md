@@ -4,7 +4,7 @@
 
 Параллельно обрабатывает список станций (SEED → CSV детекций) **на GPU**, несколькими процессами одновременно (`ProcessPoolExecutor`) — используется для точечного/дополнительного прогона станций отдельно от основной конфигурации `core/detector.py::__main__` (например, когда нужно посчитать несколько станций с другими датами или добавить станции, не трогая основной запуск). Собственной логики детекции не содержит — загружает `core/detector.py` через `importlib` и вызывает `process_station_v3()` для каждой станции; сам `gpu_pipeline.py` отвечает только за пул процессов, настройку GPU-памяти и список станций/дат для конкретного прогона.
 
-**CLI есть (2026-09-06, `production-plan.md` Трек 1)** — модель, список станций, диапазон дат, число воркеров задаются флагами (`--help`); константы в начале файла остались как значения по умолчанию для этих флагов. Предыдущая версия без CLI — `legacy/gpu_pipeline.py`.
+Модель, список станций, диапазон дат, число воркеров задаются флагами (`--help`); константы в начале файла остались как значения по умолчанию для этих флагов. Более старая версия без CLI — `legacy/gpu_pipeline.py`.
 
 ---
 
@@ -25,7 +25,7 @@
 | `--max-workers` | `MAX_WORKERS` | число процессов `ProcessPoolExecutor` — сколько станций обрабатывается одновременно; для GPU-режима ограничено объёмом VRAM (несколько процессов держат в памяти каждый свою копию модели и активаций), а не числом ядер CPU |
 | `--input-dir` / `--json-dir` | `_IN` / `_JS` | из них по кодам из `--stations` достраиваются пары `(входная_директория, station_*.json)` |
 | `--stations` | `STATIONS` | коды станций через запятую — какие обрабатывать в этом прогоне |
-| `--date-from` / `--date-to` | `DATE_FROM` / `DATE_TO` | диапазон дат (строка, парсится через `UTCDateTime`), правая граница не включается — теперь тот же флаг, что и в `cpu_pipeline.py` (унифицировано 2026-09-06 — раньше там был целый календарный месяц через `TARGET_MONTH`/`TARGET_YEAR`) |
+| `--date-from` / `--date-to` | `DATE_FROM` / `DATE_TO` | диапазон дат (строка, парсится через `UTCDateTime`), правая граница не включается — тот же флаг, что и в `cpu_pipeline.py` |
 | `--estimate-uncertainty`(`--no-estimate-uncertainty`) / `--number-of-sampling` | `ESTIMATE_UNCERTAINTY` / `NUMBER_OF_SAMPLING` | раньше зашиты прямо в вызове `process_station_v3` внутри `run_station` (`estimate_uncertainty=True, number_of_sampling=5`) — теперь CLI-флаги |
 | `--detection-threshold` / `--p-threshold` / `--s-threshold` / `--keep-ps`(`--no-keep-ps`) / `--allow-only-s` / `--sp-limit` / `--batch-size` | одноимённые константы | пороги предиктора, раньше зашитые в `worker_v4` внутри `detector.py` (см. `detector.md`) |
 
@@ -56,7 +56,7 @@ ProcessPoolExecutor(max_workers=MAX_WORKERS,
 
 Идентично `cpu_pipeline.py` — оба файла вызывают одну и ту же функцию, вся специфика детекции живёт в `detector.py`, не здесь. Полное описание цепочки — в `cpu_pipeline.md` (раздел «Что делает `process_station_v3`»):
 
-`geofile_splitter_multi_chanels_v3` (нарезка на 10-минутные сегменты, шаг 5 минут) → `preproc_sequential_v5` (последовательное потребление генератора, запись CSV по мере готовности, `gc.collect()` каждые 50 сегментов) → `worker_v4` на каждый сегмент (`preprocessorV7_mem` + `predictor_mem_non_hdf_load_model_v6`, с порогами `detection_threshold/P_threshold/S_threshold/keepPS/allowonlyS/spLimit/batch_size` — до 2026-09-06 зашитыми внутри `worker_v4` в `detector.py`, теперь настоящими параметрами по всей цепочке, задаются флагами `--detection-threshold`/`--p-threshold`/`--s-threshold`/`--keep-ps`(`--no-keep-ps`)/`--allow-only-s`/`--sp-limit`/`--batch-size`).
+`geofile_splitter_multi_chanels_v3` (нарезка на 10-минутные сегменты, шаг 5 минут) → `preproc_sequential_v5` (последовательное потребление генератора, запись CSV по мере готовности, `gc.collect()` каждые 50 сегментов) → `worker_v4` на каждый сегмент (`preprocessorV7_mem` + `predictor_mem_non_hdf_load_model_v6`, с порогами `detection_threshold/P_threshold/S_threshold/keepPS/allowonlyS/spLimit/batch_size` — настоящими параметрами по всей цепочке, задаются флагами `--detection-threshold`/`--p-threshold`/`--s-threshold`/`--keep-ps`(`--no-keep-ps`)/`--allow-only-s`/`--sp-limit`/`--batch-size`).
 
 При `estimate_uncertainty=True` модель вызывается `number_of_sampling` раз в режиме `model(X, training=True)` (реальный MC Dropout — см. правило №8 в `CLAUDE.md`) вместо одного `model.predict()`, и в CSV дополнительно попадают `detection_uncertainty`/`p_uncertainty`/`s_uncertainty`, которые затем использует `core/associator.py` в режимах `UNCERTAINTY_MODE='weight'`/`'filter'`.
 
@@ -73,6 +73,6 @@ ProcessPoolExecutor(max_workers=MAX_WORKERS,
 
 ---
 
-## Мёртвый код (удалён 2026-09-06)
+## Мёртвый код
 
-`get_threads_to_use(percent)` была определена в файле, но нигде не вызывалась — дублировала `core/threads.py::get_threads_to_use`. Убрана при переходе на CLI (`production-plan.md`, Трек 1, п.1.1); в `legacy/gpu_pipeline.py` ещё присутствует.
+`get_threads_to_use(percent)` была определена в файле, но нигде не вызывалась — дублировала `core/threads.py::get_threads_to_use`. Убрана; в `legacy/gpu_pipeline.py` ещё присутствует.

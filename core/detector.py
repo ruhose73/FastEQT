@@ -1,10 +1,12 @@
 """
 detector.py — детекция EQTransformer по станциям (CLI).
 
-Все параметры теперь задаются флагами командной строки (см. --help);
-значения по умолчанию соответствуют прежним хардкод-константам, поведение
-без флагов не меняется (кроме удаления V6-цепочки, см. ниже — она была
-небезопасна для этой сети, а не просто альтернативным путём).
+Все параметры задаются флагами командной строки (см. --help): список
+станций (--stations, коды через запятую), пути (--input-dir/--json-dir/
+--output-base-dir/--log-file), диапазон дат (--date-from/--date-to) и
+пороги предиктора (--detection-threshold/--p-threshold/--s-threshold/
+--keep-ps/--allow-only-s/--sp-limit/--batch-size), MC Dropout
+(--estimate-uncertainty/--number-of-sampling).
 
 Файл используется двумя способами:
   1. Напрямую (python core/detector.py) — обрабатывает список станций
@@ -16,51 +18,15 @@ detector.py — детекция EQTransformer по станциям (CLI).
      процессов параллельно. Пулом процессов сам этот файл не управляет —
      это забота вызывающих pipeline-файлов.
 
-Правки этой ревизии (production-plan.md, Трек 1, п.1.1/1.3, 2026-09-06),
-внесены как новый файл (не правка на месте — пользователь пока не может
-закоммитить репозиторий), предыдущая версия сохранена как legacy/detector.py:
-  - удалена process_station_v2 (мёртвый код, нигде не вызывалась);
-  - удалена неиспользуемая константа MAX_WORKERS — докстринг предыдущей
-    версии обещал параллельный режим «по умолчанию», которого в этом файле
-    никогда не было (реальный параллелизм — только в cpu_pipeline.py /
-    gpu_pipeline.py);
-  - detection_threshold/P_threshold/S_threshold/keepPS/allowonlyS/spLimit/
-    batch_size, ранее зашитые в телах worker_v3/worker_v4, подняты как
-    параметры функций по всей цепочке до CLI-флагов;
-  - список станций для прямого запуска — не список кортежей в коде, а
-    флаг --stations (коды через запятую), путь к данным и station_*.json
-    достраивается из --input-dir/--json-dir по тому же шаблону, что и
-    раньше в коде.
-
-Отдельная, более поздняя правка той же ревизии (2026-09-06, по прямому
-запросу пользователя) — удалена V6-цепочка целиком. Реальный, используемый
-в проде путь (cpu_pipeline.py/gpu_pipeline.py → process_station_v3 →
-preproc_sequential_v5 → worker_v4 → preprocessorV7_mem/predictor_v6) НЕ
-менялся вообще:
-  - geofile_splitter_multi_chanels_v2, worker_v3, preproc_sequential_v4,
-    process_station удалены из этого файла — их и так не вызывали ни
-    cpu_pipeline.py, ни gpu_pipeline.py, только __main__ этого файла и
-    вспомогательный plot_event.py в корне репозитория. EQTransformer/ не
-    трогаем (правило №1 CLAUDE.md — только код проекта, не форк/апдейты
-    EQTransformer): preprocessorV6_mem (EQTransformer/utils/hdf5_maker.py) и
-    predictor_mem_non_hdf_load_model_v4 (EQTransformer/core/predictor.py)
-    остаются в EQTransformer/ как есть — просто больше не импортируются и
-    не вызываются отсюда;
-  - причина удаления — не просто «мёртвый код»: для станций с частотой
-    дискретизации <90 Гц (8 из 10 проверенных станций сети) порядок
-    filter→resample в preprocessorV6_mem приводил к тому, что ObsPy молча
-    подставлял high-pass 1 Гц без верхней границы вместо полосового фильтра
-    1–45 Гц — небезопасно для этой сети (см. EQTransformer/eqt_internals.md,
-    разд. 3);
-  - __main__ пересобран поверх той же самой V7-цепочки, что и в
-    cpu_pipeline.py/gpu_pipeline.py (process_station_v3) — диапазон дат для
-    прямого запуска теперь --date-from/--date-to вместо --month/--year
-    (унификация с cpu_pipeline.py/gpu_pipeline.py — сигнатура
-    process_station_v3 принимает даты, а не месяц/год); добавлены
-    --estimate-uncertainty/--number-of-sampling;
-  - plot_event.py — единственный внешний потребитель
-    geofile_splitter_multi_chanels_v2/preproc_sequential_v4 — переведён на
-    geofile_splitter_multi_chanels_v3/preproc_sequential_v5 отдельным шагом.
+Единственная цепочка обработки сегмента — process_station_v3 →
+preproc_sequential_v5 → worker_v4 → preprocessorV7_mem/predictor_v6
+(ресемплинг через st.resample() до фильтрации, реальный MC Dropout,
+см. core/detector.md). Более старая цепочка предобработки (ресемплинг
+после фильтрации) для станций с частотой дискретизации <90 Гц заставляла
+ObsPy молча подставлять high-pass 1 Гц без верхней границы вместо
+полосового фильтра 1–45 Гц — небезопасно для сети, где это типичная
+частота; см. EQTransformer/eqt_internals.md, разд. 3. Старая версия файла
+(с обеими цепочками) — legacy/detector.py.
 """
 
 import argparse
@@ -102,9 +68,9 @@ LOG_FILE        = os.path.join(_ROOT, "workspace", "detector", "output", "proces
 DATE_FROM = "2024-01-01"
 DATE_TO   = "2024-02-01"   # не включается
 
-# По умолчанию — выход data_processors/main.py (workspace/, production-plan.md
-# Трек 1); workspace/detector/input/ существует отдельно для случая, когда
-# волновые файлы/station_*.json кладутся туда напрямую, минуя data_processors.
+# По умолчанию — выход data_processors/main.py; workspace/detector/input/
+# существует отдельно для случая, когда волновые файлы/station_*.json
+# кладутся туда напрямую, минуя data_processors.
 _IN = os.path.join(_ROOT, "workspace", "data_processors", "output", "geofiles")
 _JS = os.path.join(_ROOT, "workspace", "data_processors", "output")
 
