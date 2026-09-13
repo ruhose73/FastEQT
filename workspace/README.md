@@ -16,6 +16,8 @@ workspace/
                       output/  — CSV детекций по станциям, processing_log.csv
   associator/        input/   — стейджинг детекций по станциям (assoc_input)
                       output/  — associations.xml, Y2000.phs, traceNmae_dic.json
+  locator/           input/   — SC3ML-инвентарь станций для SeisComP (inventory.scml)
+                      output/  — hypocenters.csv (гипоцентры LOCSAT/NonLinLoc)
   magnitude/         input/   — (обычно не используется — см. ниже)
                       output/  — sta_corrections_*.csv, amps_*.csv, associations_ml*.xml
   validation/        input/   — (обычно не используется — см. ниже)
@@ -28,10 +30,12 @@ workspace/
 вход следующей по факту (так и настроены CLI-дефолты в `core/*.py`), поэтому
 `input/` заполнен на диске не у каждой стадии — только там, где реально нужен
 independent от предыдущей стадии ввод (`data_processors/input`,
-`detector/input`, `associator/input`). `magnitude/`, `validation/`,
-`bulletin/` по умолчанию читают `associator/output`/`magnitude/output`
-напрямую — их `input/` существует как явное место, если хотите передать
-данные из другого источника (не по дефолтному пути), не трогая код.
+`detector/input`, `associator/input`, `locator/input` — SC3ML-инвентарь
+собирается один раз вручную, не производится предыдущей стадией пайплайна, см.
+`core/locator.md`). `magnitude/`, `validation/`, `bulletin/` по умолчанию читают
+`associator/output`/`magnitude/output` напрямую — их `input/` существует как
+явное место, если хотите передать данные из другого источника (не по
+дефолтному пути), не трогая код.
 
 Все дефолты — только дефолты: любой путь переопределяется явным CLI-флагом
 (`--input-dir`, `--output-base-dir`, `--assoc`, `--sta-corrections` и т.д. —

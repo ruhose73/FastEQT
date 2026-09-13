@@ -46,6 +46,16 @@
 
 ---
 
+## Локация гипоцентра
+
+### `locator.py` — гипоцентры через LOCSAT/NonLinLoc (SeisComP)
+
+Читает `associations.xml`, для каждого события строит `seiscomp.datamodel.Origin`+`Pick`/`Arrival` и вызывает `LocatorInterface.Create("LOCSAT").relocate()` — таблицы годографов iasp91/ak135 из комплекта SeisComP. Пишет `hypocenters.csv` (lat/lon/depth, погрешность глубины, RMS, признак сходимости) — только сырые метрики, без порогов/фильтрации (см. `locator.md`, раздел 1.7 `context/locsat-plan.md`). **Требует отдельный интерпретатор** `seiscomp-python` — модуль `seiscomp` недоступен в conda `eqt3`; `--help` и разбор XML работают под любым python, реальный прогон — только через `seiscomp exec seiscomp-python`.
+
+→ подробности: `locator.md`
+
+---
+
 ## Магнитуда (ML)
 
 ### `sta_correction_estimator.py` — станционные поправки для формулы ML
