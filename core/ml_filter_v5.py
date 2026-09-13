@@ -59,6 +59,7 @@ DEFAULT_ASSOC_OUT = None   # рядом с assoc-in: associations_ml<thr>.xml
 DEFAULT_WAVEFORMS = os.path.join(_ROOT, 'workspace', 'data_processors', 'output', 'geofiles')
 DEFAULT_CACHE_AMP = os.path.join(_ROOT, 'workspace', 'magnitude', 'output', 'amps_filter_cache.csv')
 DEFAULT_METADATA  = os.path.join(_ROOT, 'workspace', 'data_processors', 'input', 'metadata')
+DEFAULT_HYPOCENTERS = os.path.join(_ROOT, 'workspace', 'locator', 'output', 'hypocenters.csv')
 DEFAULT_THRESHOLD = 1.0
 
 # ── Пространства имён QuakeML ──────────────────────────────────────────────────
@@ -177,6 +178,102 @@ def compute_r_dict(picks_p, picks_s, vp, vs, r_max_km):
             continue
         r = sp_distance_km(picks_p[sta], picks_s[sta], vp, vs)
         if r is not None and r > 0.0 and r <= r_max_km:
+            r_dict[sta] = r
+    return r_dict
+
+
+# ── R из реального гипоцентра (раздел 1.7d плана, --distance-source locator) ──
+# Opt-in альтернатива compute_r_dict() — не замена (Rule 13). По умолчанию
+# (--distance-source sp) поведение не меняется вообще, эти функции не вызываются.
+# Независимая копия той же логики, что в core/validate_associator_v2.py (см.
+# докстринг _r_dict_from_locator() там) — эти два модуля не импортируют друг друга
+# (Rule 14 про намеренное дублирование между независимыми потребителями).
+
+_FDSN_NS = {'f': 'http://www.fdsn.org/xml/station/1'}
+
+
+def load_station_coords(metadata_dir):
+    """station -> (lat, lon) из StationXML. Лёгкий ElementTree-парсинг, независимый
+    от ObsPy Inventory, который этот модуль грузит только при промахе кэша амплитуд
+    (main()) — координаты нужны всегда при --distance-source locator, вне
+    зависимости от того, попал ли кэш амплитуд."""
+    coords = {}
+    if not os.path.isdir(metadata_dir):
+        return coords
+    for fname in os.listdir(metadata_dir):
+        if not fname.endswith('.xml'):
+            continue
+        parts = fname.split('_')
+        if len(parts) < 2:
+            continue
+        sta = parts[1].strip()
+        try:
+            tree = ET.parse(os.path.join(metadata_dir, fname))
+        except ET.ParseError:
+            continue
+        root   = tree.getroot()
+        lat_el = root.find('.//f:Station/f:Latitude', _FDSN_NS)
+        lon_el = root.find('.//f:Station/f:Longitude', _FDSN_NS)
+        if lat_el is not None and lon_el is not None:
+            coords[sta] = (float(lat_el.text), float(lon_el.text))
+    return coords
+
+
+def load_hypocenters(path):
+    """event_id (publicID) -> строка core/locator.py::CSV_FIELDS, числовые поля
+    приведены к float/bool. Формат идентичен load_hypocenters() в
+    core/export_bul.py/core/validate_associator_v2.py."""
+    hyp = {}
+    if not path or not os.path.isfile(path):
+        return hyp
+    with open(path, newline='', encoding='utf-8') as f:
+        for row in csv.DictReader(f):
+            event_id = row.get('event_id', '').strip()
+            if not event_id:
+                continue
+            row['converged'] = row.get('converged', '').strip() == 'True'
+            for key in ('lat', 'lon', 'depth_km', 'depth_uncertainty_km', 'rms'):
+                val = (row.get(key) or '').strip()
+                row[key] = float(val) if val else None
+            hyp[event_id] = row
+    return hyp
+
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dl   = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def compute_r_dict_from_locator(picks_p, picks_s, station_coords, hyp_row,
+                                r_max_km, metric='hypocentral'):
+    """
+    Аналог compute_r_dict(), но R — из реального гипоцентра, не из S-P времени.
+    Вызывающий код обязан сам проверить hyp_row['converged'] перед вызовом.
+
+    metric='hypocentral' (default): R = sqrt(эпицентральная² + depth_km²) — та же
+    физическая величина, что фактически даёт compute_r_dict() (S-P время зависит от
+    полной длины луча, не только от горизонтального расстояния) — так ML между
+    --distance-source sp/locator остаётся сравнимым. metric='epicentral' — только
+    горизонтальная дистанция, без глубины (см. подробное обоснование в
+    core/validate_associator_v2.py::_r_dict_from_locator()).
+    """
+    r_dict = {}
+    lat0, lon0, depth = hyp_row.get('lat'), hyp_row.get('lon'), hyp_row.get('depth_km')
+    if lat0 is None or lon0 is None:
+        return r_dict
+    for sta in picks_p:
+        if sta not in picks_s:
+            continue
+        coords = station_coords.get(sta)
+        if coords is None:
+            continue
+        epi = _haversine_km(lat0, lon0, coords[0], coords[1])
+        r = math.sqrt(epi ** 2 + depth ** 2) if (metric == 'hypocentral' and depth is not None) else epi
+        if 0.0 < r <= r_max_km:
             r_dict[sta] = r
     return r_dict
 
@@ -662,6 +759,22 @@ def main():
     parser.add_argument('--r-max-km',       type=float, default=R_MAX_KM,
                         help='Дальняя граница применимости формулы, км')
 
+    # -- источник R (раздел 1.7d плана) --
+    parser.add_argument('--distance-source', default='sp', choices=['sp', 'locator'],
+                        help='Источник R для формулы ML: sp (default) — из S-P времени, '
+                             'как раньше; locator — реальная дистанция из --hypocenters. '
+                             'Событие без сошедшегося решения локатора автоматически '
+                             'откатывается на sp (не ошибка)')
+    parser.add_argument('--hypocenters',    default=DEFAULT_HYPOCENTERS,
+                        help=f'CSV — выход core/locator.py, только при --distance-source '
+                             f'locator (default: {DEFAULT_HYPOCENTERS})')
+    parser.add_argument('--locator-distance-metric', default='hypocentral',
+                        choices=['hypocentral', 'epicentral'],
+                        help='hypocentral (default) = sqrt(эпицентральная² + depth²) — та '
+                             'же физическая величина, что даёт S-P-метод, сравнимая между '
+                             '--distance-source sp/locator; epicentral — только '
+                             'горизонтальная дистанция, без глубины')
+
     # -- измерение амплитуды --
     parser.add_argument('--win-sec',        type=float, default=WIN_SEC,
                         help='Длина окна измерения амплитуды S-волны, сек')
@@ -725,16 +838,36 @@ def main():
     events_full = parse_xml_full(tree)
     print(f"  Событий в XML: {len(events_full)}")
 
-    # ── Вычисление R по S-P формуле ──────────────────────────────────────────
-    print("\nВычисление R по S-P формуле...")
+    # ── Источник R (раздел 1.7d плана: opt-in, default 'sp' не меняет поведение) ──
+    hypocenters, station_coords = {}, {}
+    if args.distance_source == 'locator':
+        hypocenters    = load_hypocenters(args.hypocenters)
+        station_coords = load_station_coords(args.metadata_dir)
+        print(f"\nR для ML: locator ({args.locator_distance_metric})  "
+              f"гипоцентров={len(hypocenters)}  координат станций={len(station_coords)}  "
+              f"[фолбэк на S-P для событий без сошедшегося решения]  ({args.hypocenters})")
+
+    # ── Вычисление R ──────────────────────────────────────────────────────────
+    print("\nВычисление R...")
     all_events = []   # (pub_id, picks_p, picks_s, r_dict)
-    n_has_r = 0
+    n_has_r = n_from_locator = n_fallback_sp = 0
     for _, pub_id, _, picks_p, picks_s in events_full:
-        r_dict = compute_r_dict(picks_p, picks_s, args.vp, args.vs, args.r_max_km)
+        hyp_row = hypocenters.get(pub_id) if args.distance_source == 'locator' else None
+        if hyp_row and hyp_row.get('converged'):
+            r_dict = compute_r_dict_from_locator(
+                picks_p, picks_s, station_coords, hyp_row, args.r_max_km,
+                args.locator_distance_metric)
+            n_from_locator += 1
+        else:
+            r_dict = compute_r_dict(picks_p, picks_s, args.vp, args.vs, args.r_max_km)
+            if args.distance_source == 'locator':
+                n_fallback_sp += 1
         all_events.append((pub_id, picks_p, picks_s, r_dict))
         if r_dict:
             n_has_r += 1
-    print(f"  Событий с S-P расстоянием: {n_has_r} / {len(all_events)}")
+    print(f"  Событий с R: {n_has_r} / {len(all_events)}")
+    if args.distance_source == 'locator':
+        print(f"  R из локатора: {n_from_locator}  fallback на S-P: {n_fallback_sp}")
 
     all_r = [r for _, _, _, rd in all_events for r in rd.values()]
     if all_r:
