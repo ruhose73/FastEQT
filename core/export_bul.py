@@ -7,11 +7,24 @@ time по двухскоростной модели Pg/Sg-Pn/Sn (estimate_origin
 выбросов (sigma_filter), ML по Дягилеву et al. 2023 (compute_ml). Отличие —
 нет сравнения с каталогом, на выходе ВСЕ события, прошедшие фильтры.
 
-Гипоцентр не вычисляется (в проекте нет триангуляции/локации, см. комментарий
-в write_quakeml() в validate_associator_v2.py) — Lat/Lon/Depth и производные от
-них поля (Smaj/Smin/Az/Gap/RMS/Qual) оставлены пустыми. mdist/Mdist — не
-производные от эпицентра: это min/max R_km (S-P расстояние до станции),
-переведённое в градусы — их вычислить можно и без координат.
+Гипоцентр по умолчанию не заполняется (`--locator-mode off`, старое поведение) —
+Lat/Lon/Depth и производные от них поля (Smaj/Smin/Az/RMS) остаются пустыми,
+`fmt_origin_line()` используется как раньше. mdist/Mdist — не производные от
+эпицентра: это min/max R_km (S-P расстояние до станции), переведённое в градусы —
+их вычислить можно и без координат, поэтому они заполняются всегда, независимо
+от `--locator-mode`.
+
+С `--locator-mode enrich|filter` (`context/locsat-plan.md`, Шаг 5) подключается
+`core/locator.py` (LOCSAT через SeisComP) — `--hypocenters` указывает на его выход
+(`workspace/locator/output/hypocenters.csv`). Для событий, у которых там есть
+сошедшееся решение, `fmt_origin_line_v2()` заполняет Lat/Lon/Depth/Err(depth)/RMS
+и меняет код метода локации с `'o'` (other, S-P) на `'i'` (inversion) — по
+спецификации IMS1.0:SHORT (см. комментарий у `ORIGIN_HEADER`). `filter`
+дополнительно отбрасывает события, чьё (сошедшееся) решение не проходит
+`_passes_locator_quality()` — события без решения локатора (или не найденные в
+`hypocenters.csv`) НЕ считаются провалившими фильтр, для них — старое поведение
+(`fmt_origin_line`, только T0). Раздел 1.7b плана: `locator.py` порогов не знает,
+их считает и применяет только этот модуль.
 
 Регион в шапке EVENT определяется по административному региону ближайшей
 станции (metadata-25/*.xml, StationXML Site/Name, поле после первой запятой).
@@ -22,11 +35,13 @@ time по двухскоростной модели Pg/Sg-Pn/Sn (estimate_origin
 России и даже Антарктиде (см. load_station_coords/filter_far_stations).
 
 ВАЖНО: раскладка столбцов — приближение к визуальному виду bul/*.BUL, а не
-побайтовая копия официальной спецификации ISF/IMS1.0 (по паре строк-образцов
-её не восстановить надёжно — часть подписей в шапке не выровнена по правому
-краю поля, напр. Date/Time). Поля, которые реально заполняются (Date, Time,
-Ndef, Nsta, Author, OrigID, Sta, Phase, Time, SNR, Amp, Magnitude, ArrID),
-выровнены вручную по примеру; остальные — просто резерв места под пробелами.
+побайтовая копия официальной спецификации ISF/IMS1.0 целиком (часть подписей в
+шапке не выровнена по правому краю поля, напр. Date/Time). Поля, которые
+реально заполняются (Date, Time, Ndef, Nsta, Author, OrigID, Sta, Phase, Time,
+SNR, Amp, Magnitude, ArrID — всегда; Latitude, Longitude, Depth, Err depth, RMS
+— только с `--locator-mode enrich|filter`), выровнены по позициям, выверенным
+побайтово по реальным официальным бюллетеням (см. комментарий у
+`fmt_origin_line_v2()`); остальные — просто резерв места под пробелами.
 Перед отправкой в НИИ стоит сверить пару событий с примером глазами.
 
 Использование:
@@ -52,6 +67,14 @@ DEFAULT_AMPS      = v2.DEFAULT_AMPS
 DEFAULT_PROB_DIR  = os.path.join(_ROOT, "workspace", "associator", "input")
 DEFAULT_METADATA_DIR   = os.path.join(_ROOT, "workspace", "data_processors", "input", "metadata")
 DEFAULT_OUTPUT_CPU_DIR = os.path.join(_ROOT, "workspace", "detector", "output")
+DEFAULT_HYPOCENTERS    = os.path.join(_ROOT, "workspace", "locator", "output", "hypocenters.csv")
+
+# depth_uncertainty_km == 0.0 (в пределах эпсилон) — надёжный признак того, что LOCSAT упёрся
+# в границу таблицы годографов (0 или ~750 км), а не решил глубину как свободный параметр
+# (context/locsat-plan.md, раздел 5, "Результат... 2026-09-09" — проверено на 20 событиях,
+# не гипотеза). НЕ порог качества по RMS — тот пользователь выбирает сам через
+# --locator-max-rms, откалиброванного значения по умолчанию пока нет (Шаг 6 плана не сделан).
+DEFAULT_LOCATOR_MIN_DEPTH_UNCERTAINTY_KM = 1e-3
 
 AUTHOR = "EQT"
 KM_PER_DEG = 111.195
@@ -227,6 +250,53 @@ def load_s_snr(assoc_input_dir):
     return result
 
 
+# ── Гипоцентры core/locator.py (--locator-mode enrich|filter) ─────────────────
+
+def load_hypocenters(path):
+    """
+    event_id (publicID, тот же ключ, что ae['pub_id']) -> строка core/locator.py::CSV_FIELDS,
+    с числовыми полями уже приведёнными к float/bool (сырой CSV пишет их как текст/'True'/'False').
+    Событие без сошедшегося решения (converged=False) тоже попадает в словарь — по нему
+    вызывающий код узнаёт "решения нет" и откатывается к fmt_origin_line() (раздел 7 плана),
+    а не молча считает событие отсутствующим.
+    """
+    hyp = {}
+    if not path or not os.path.isfile(path):
+        return hyp
+    with open(path, newline='', encoding='utf-8') as f:
+        for row in csv.DictReader(f):
+            event_id = row.get('event_id', '').strip()
+            if not event_id:
+                continue
+            row['converged'] = row.get('converged', '').strip() == 'True'
+            for key in ('lat', 'lon', 'depth_km', 'depth_uncertainty_km', 'rms'):
+                val = (row.get(key) or '').strip()
+                row[key] = float(val) if val else None
+            hyp[event_id] = row
+    return hyp
+
+
+def _passes_locator_quality(row, max_rms=None,
+                             min_depth_uncertainty_km=DEFAULT_LOCATOR_MIN_DEPTH_UNCERTAINTY_KM):
+    """
+    Решение "проходит/не проходит" по метрикам из hypocenters.csv (раздел 1.7b плана —
+    locator.py таких решений не принимает, это ответственность потребителя). Вызывать только
+    для строк с converged=True — несошедшееся решение обрабатывается отдельно (раздел 7:
+    отсутствие решения — не провал фильтра, а откат к старому поведению).
+
+    - depth_uncertainty_km ниже min_depth_uncertainty_km (по умолчанию, условно, "== 0") —
+      признак упора в границу таблицы годографов, не настоящее решение (см. комментарий у
+      DEFAULT_LOCATOR_MIN_DEPTH_UNCERTAINTY_KM).
+    - max_rms — опциональный порог невязки (сек); без него (None) не проверяется вообще, т.к.
+      откалиброванного значения по умолчанию нет (Шаг 6 плана "калибровка порога" не сделан).
+    """
+    if row['depth_uncertainty_km'] is None or row['depth_uncertainty_km'] < min_depth_uncertainty_km:
+        return False
+    if max_rms is not None and (row['rms'] is None or row['rms'] > max_rms):
+        return False
+    return True
+
+
 # ── Фильтрация событий (без сравнения с каталогом) ────────────────────────────
 
 def process_events(assoc_events, vp, vs, sigma_mult, r_min, r_max,
@@ -306,9 +376,19 @@ def process_events(assoc_events, vp, vs, sigma_mult, r_min, r_max,
 # "Formats and Protocols for Messages — IMS1.0" (Table 41: Origin Block Format,
 # Table 42: Phase Block Format; https://www.isc.ac.uk/standards/isf/download/ims1_0.pdf).
 # Колонки Phase Block проверены побайтово на примерах из приложения A документа
-# (стр. A16-A17) — совпадают буква в букву. Origin Block сверен по номерам
-# колонок из той же таблицы (пример в PDF с потерянными при экстракции
-# пробелами, поэтому использованы только числа спецификации, не сам пример).
+# (стр. A16-A17) — совпадают буква в букву. Origin Block (поля, заполнявшиеся до
+# Шага 5 плана: Date/Time/Ndef/Nsta/mdist/Mdist/analysis type/location
+# method/event type/Author/OrigID) сверен по номерам колонок из той же таблицы.
+#
+# ⚠️ Поля, добавленные на Шаге 5 (Latitude/Longitude/Depth/Err depth/RMS,
+# `fmt_origin_line_v2()`) — НЕ по номерам колонок из этого PDF: при извлечении
+# текста из его двухколоночной вёрстки (`pdftotext -layout`) Position/Format
+# перемешиваются с описаниями полей не в том порядке (проверено конкретно на
+# этом PDF, 2026-09-13) — доверять числам оттуда для ЭТИХ полей нельзя. Вместо
+# этого позиции выверены побайтово по двум независимым реальным источникам,
+# давшим один и тот же результат: официальный бюллетень ГС РАН
+# (`workspace/bulletin/input/2024_jan-dec_NCAU.BUL`) и пример с сайта ISC
+# (событие 11691339, `www.isc.ac.uk/cgi-bin/web-db-v4?...out_format=IMS1.0`).
 #
 # Важная деталь, из-за которой Def "наезжал" на SRes: Def — это НЕ строка "T__"
 # одним куском, а три однобайтовых флага в колонках 74/75/76 (T/_, A/_, S/_ —
@@ -349,6 +429,53 @@ def fmt_origin_line(t0, n_def, n_sta, mdist, Mdist, orig_id):
     _put(c, 116, 117, 'uk')                                    # event type: unknown (не верифицировано)
     _put(c, 119, 127, AUTHOR, 'left')                          # author
     _put(c, 129, 136, orig_id)                                 # origid
+    return ''.join(c).rstrip()
+
+
+def _fmt_fit(value, width, max_decimals):
+    """
+    Форматирует float так, чтобы не превысить width символов, снижая число знаков после
+    запятой при необходимости (переменная точность — так же ведут себя реальные бюллетени
+    ISC/ГС РАН, где, например, RMS в одном и том же 5-символьном поле — то "1.140", то
+    "119.4" в зависимости от величины). Нужно, чтобы _put() не обрезал старшие разряды
+    молча (_put() усекает строку СЛЕВА, если она не влезает — для числа это испортило бы
+    значение, напр. RMS 119.41 стало бы "19.41").
+    """
+    for dec in range(max_decimals, -1, -1):
+        s = f"{value:.{dec}f}"
+        if len(s) <= width:
+            return s
+    return f"{value:.0f}"  # даже целая часть не влезает — не наша ответственность обрезать
+
+
+def fmt_origin_line_v2(t0, n_def, n_sta, mdist, Mdist, orig_id,
+                        lat=None, lon=None, depth_km=None, depth_uncertainty_km=None, rms=None):
+    """
+    fmt_origin_line() + Latitude/Longitude/Depth/Err(depth)/RMS/location method реальные
+    (не пустые) — заполняются только когда есть решение локатора (Rule 13: fmt_origin_line()
+    не трогаем, эта функция рядом, для событий с core/locator.py-решением).
+
+    Позиции столбцов (Latitude/Longitude/Smaj/Smin/Az/Depth/Err/RMS), которых не было в
+    fmt_origin_line(), НЕ взяты из спецификации IDC-3.4.1Rev1 на глаз (PDF Table 41 при
+    извлечении текста из двухколоночной вёрстки перемешивает Position/Format с описаниями
+    полей не в том порядке — проверено, доверять нельзя) — вместо этого побайтово выверены по
+    реальному официальному бюллетеню ГС РАН (`workspace/bulletin/input/2024_jan-dec_NCAU.BUL`)
+    и по примеру ISC IMS1.0 (событие 11691339, `www.isc.ac.uk`) — оба независимо дают одни и
+    те же границы полей, что и подтверждает их корректность.
+    """
+    c = list(fmt_origin_line(t0, n_def, n_sta, mdist, Mdist, orig_id).ljust(ORIGIN_LEN))
+    if rms is not None:
+        _put(c, 31, 35, _fmt_fit(rms, 5, 2))
+    if lat is not None:
+        _put(c, 37, 44, f"{lat:.4f}")   # +-90, всегда влезает в 8 символов с 4 знаками
+    if lon is not None:
+        _put(c, 46, 54, f"{lon:.4f}")   # +-180, всегда влезает в 9 символов с 4 знаками
+    if depth_km is not None:
+        _put(c, 72, 76, _fmt_fit(depth_km, 5, 1))
+    if depth_uncertainty_km is not None:
+        _put(c, 78, 82, _fmt_fit(depth_uncertainty_km, 5, 1))
+    if lat is not None or lon is not None or depth_km is not None:
+        _put(c, 114, 114, 'i')  # location method: inversion (LOCSAT/NonLinLoc), не 'o' (S-P)
     return ''.join(c).rstrip()
 
 
@@ -401,8 +528,16 @@ def write_bul(processed, region_map, amplitudes, p_snr_dict, s_snr_dict, out_pat
 
             f.write(f"EVENT {orig_id} {region}\n")
             f.write(ORIGIN_HEADER + "\n")
-            f.write(fmt_origin_line(ae['t0'], ae['n_def'], ae['n_sta'],
-                                     mdist, Mdist, orig_id) + "\n\n")
+            loc = ae.get('locator')
+            if loc and loc['converged']:
+                origin_line = fmt_origin_line_v2(
+                    ae['t0'], ae['n_def'], ae['n_sta'], mdist, Mdist, orig_id,
+                    lat=loc['lat'], lon=loc['lon'], depth_km=loc['depth_km'],
+                    depth_uncertainty_km=loc['depth_uncertainty_km'], rms=loc['rms'])
+            else:
+                origin_line = fmt_origin_line(ae['t0'], ae['n_def'], ae['n_sta'],
+                                               mdist, Mdist, orig_id)
+            f.write(origin_line + "\n\n")
 
             if ae['ml'] is not None:
                 f.write(MAG_HEADER + "\n")
@@ -456,6 +591,29 @@ def main():
     parser.add_argument('--month', type=int, default=None)
     parser.add_argument('--min-stations', type=int, default=1)
     parser.add_argument('--min-stations-mode', default='xml', choices=['xml', 'sigma'])
+    parser.add_argument('--locator-mode', default='off', choices=['off', 'enrich', 'filter'],
+                        help="off (default) — старое поведение, Lat/Long/Depth пустые; "
+                             "enrich — заполнять их из --hypocenters там, где есть решение "
+                             "core/locator.py; filter — enrich + отбрасывать события, чьё "
+                             "решение не проходит --locator-max-rms/--locator-min-depth-uncertainty-km "
+                             "(_passes_locator_quality(), context/locsat-plan.md раздел 7). "
+                             "Событие БЕЗ решения локатора (не сошлось/нет в файле) не "
+                             "отбрасывается в filter — для него всегда старое поведение (T0-only)")
+    parser.add_argument('--hypocenters', default=DEFAULT_HYPOCENTERS,
+                        help=f"CSV — выход core/locator.py, используется только при "
+                             f"--locator-mode enrich|filter (default: {DEFAULT_HYPOCENTERS})")
+    parser.add_argument('--locator-max-rms', type=float, default=None,
+                        help="--locator-mode filter: отбрасывать события с rms выше этого "
+                             "порога (сек). Без значения (по умолчанию) RMS не проверяется — "
+                             "откалиброванного порога по умолчанию нет, Шаг 6 плана "
+                             "(валидация против каталога) ещё не сделан, см. context/locsat-plan.md")
+    parser.add_argument('--locator-min-depth-uncertainty-km', type=float,
+                        default=DEFAULT_LOCATOR_MIN_DEPTH_UNCERTAINTY_KM,
+                        help="--locator-mode filter: отбрасывать сошедшиеся события с "
+                             "depth_uncertainty_km ниже этого значения — признак упора в "
+                             f"границу таблицы годографов, не настоящее решение (default: "
+                             f"{DEFAULT_LOCATOR_MIN_DEPTH_UNCERTAINTY_KM}, см. "
+                             "context/locsat-plan.md раздел 5)")
     parser.add_argument('--out', required=True, help="Путь к выходному .BUL файлу")
     args = parser.parse_args()
 
@@ -502,6 +660,27 @@ def main():
         print(f"Исключено станций (дальше {max_dist:.0f} км): {len(excluded_stations)}  "
               f"[{', '.join(sorted(excluded_stations))}]")
     print(f"Событий после T0/sigma-фильтра: {len(processed)}")
+
+    if args.locator_mode != 'off':
+        hypocenters = load_hypocenters(args.hypocenters)
+        print(f"Гипоцентров загружено: {len(hypocenters)}  ({args.hypocenters})")
+        n_enriched = 0
+        for ae in processed:
+            ae['locator'] = hypocenters.get(ae['pub_id'])
+            if ae['locator'] and ae['locator']['converged']:
+                n_enriched += 1
+        print(f"Событий с решением локатора: {n_enriched} (из {len(processed)})")
+
+        if args.locator_mode == 'filter':
+            before = len(processed)
+            processed = [ae for ae in processed
+                         if not (ae['locator'] and ae['locator']['converged']
+                                 and not _passes_locator_quality(
+                                     ae['locator'], args.locator_max_rms,
+                                     args.locator_min_depth_uncertainty_km))]
+            print(f"После фильтра по качеству локации: {len(processed)} (из {before}, "
+                  f"отброшено {before - len(processed)} с решением, не прошедшим "
+                  f"_passes_locator_quality — события без решения локатора не отбрасываются)")
 
     if args.year is not None or args.month is not None:
         before = len(processed)
