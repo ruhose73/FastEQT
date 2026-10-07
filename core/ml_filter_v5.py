@@ -59,6 +59,8 @@ DEFAULT_ASSOC_OUT = None   # рядом с assoc-in: associations_ml<thr>.xml
 DEFAULT_WAVEFORMS = os.path.join(_ROOT, 'workspace', 'data_processors', 'output', 'geofiles')
 DEFAULT_CACHE_AMP = os.path.join(_ROOT, 'workspace', 'magnitude', 'output', 'amps_filter_cache.csv')
 DEFAULT_METADATA  = os.path.join(_ROOT, 'workspace', 'data_processors', 'input', 'metadata')
+DEFAULT_STATION_JSON = os.path.join(_ROOT, 'workspace', 'data_processors', 'output', 'json2',
+                                    'station_list_2.json')
 DEFAULT_HYPOCENTERS = os.path.join(_ROOT, 'workspace', 'locator', 'output', 'hypocenters.csv')
 DEFAULT_THRESHOLD = 1.0
 
@@ -587,6 +589,84 @@ def compute_event_ml_v2(pub_id, r_dict, amplitudes, sta_corr,
     return float(np.mean([e[3] for e in entries])), len(entries)
 
 
+# ── Дальние станции и ML по согласованным станциям (2026-10-07) ──────────────
+# Ассоциатор подмешивает в событие пики чужих станций: у них S-P мало, R по S-P в разы
+# меньше истинного, ML станции сильно занижена и тянет ML события вниз — реальные
+# события M3-4.5 по бюллетеню получали ML < 1.5 и удалялись фильтром. Разбор и проверка
+# против бюллетеня ГС РАН (май 2024, 2025 Q1/Q2) — context/locsat-plan.md, раздел 8.
+
+REF_LAT           = 43.6   # опорная точка для --max-station-dist-km: Сочи,
+REF_LON           = 40.0   # как по умолчанию в core/export_bul.py
+CONSISTENCY_SIGMA = 1.0    # = validate_associator_v2 --sigma по умолчанию
+CONSISTENCY_R_MIN = 20.0   # = validate_associator_v2 --r-min по умолчанию
+
+
+def load_station_coords_json(path):
+    """station -> (lat, lon) из сводного JSON станций (data_processors, формат
+    {"STA": {"network", "channels", "coords": [lat, lon, elev]}})."""
+    import json
+    if not path or not os.path.isfile(path):
+        return {}
+    with open(path, encoding='utf-8') as f:
+        data = json.load(f)
+    coords = {}
+    for sta, info in data.items():
+        c = info.get('coords') if isinstance(info, dict) else None
+        if c and len(c) >= 2:
+            coords[sta.strip()] = (float(c[0]), float(c[1]))
+    return coords
+
+
+def far_stations(stations, station_coords, max_km, ref_lat=REF_LAT, ref_lon=REF_LON):
+    """(далёкие, без_координат): станции дальше max_km от (ref_lat, ref_lon) и станции
+    без известных координат (их расстояние неизвестно — они НЕ отсекаются)."""
+    far, unknown = set(), set()
+    for sta in stations:
+        c = station_coords.get(sta)
+        if c is None:
+            unknown.add(sta)
+        elif _haversine_km(ref_lat, ref_lon, c[0], c[1]) > max_km:
+            far.add(sta)
+    return far, unknown
+
+
+def consistent_stations(picks_p, picks_s, vp, vs, sigma_mult=CONSISTENCY_SIGMA,
+                        r_min=CONSISTENCY_R_MIN, exclude_stations=None):
+    """
+    Станции события, чьё время очага T0 по S-P согласуется с остальными — σ-фильтр
+    validate_associator_v2 (estimate_origin_times + sigma_filter; импорт, не копия —
+    тот же отбор, что у входа LOCSAT, validate_associator_v2.py --out-xml-inliers).
+    exclude_stations убираются ДО фильтра — иначе чужие станции могут оказаться
+    «согласованным большинством». Пустое множество — оценки T0 нет.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import validate_associator_v2 as v2
+    excl = set(exclude_stations) if exclude_stations else set()
+    picks = {sta: {'p': t, 's': picks_s[sta]} for sta, t in picks_p.items()
+             if sta not in excl and sta in picks_s}
+    raw = v2.estimate_origin_times(picks, vp, vs, r_min, None)
+    if not raw:
+        return set()
+    inliers, _ = v2.sigma_filter(raw, sigma_mult)
+    return {e['station'] for e in inliers}
+
+
+def compute_event_ml_v3(pub_id, r_dict, amplitudes, sta_corr, consistent=None, **kwargs):
+    """
+    Как compute_event_ml_v2(), но если передано consistent (множество станций) — ML
+    считается только по ним; если так ML не получается (меньше n_min_sta станций с
+    амплитудой) — откат на ML по всем станциям события.
+    Возвращает (ml, n_stations, used_consistent).
+    """
+    if consistent:
+        r_sub = {s: r for s, r in r_dict.items() if s in consistent}
+        ml, n = compute_event_ml_v2(pub_id, r_sub, amplitudes, sta_corr, **kwargs)
+        if ml is not None:
+            return ml, n, True
+    ml, n = compute_event_ml_v2(pub_id, r_dict, amplitudes, sta_corr, **kwargs)
+    return ml, n, False
+
+
 # ── Фильтрация XML ────────────────────────────────────────────────────────────
 
 def filter_xml(tree, ml_by_pubid, threshold, out_path, keep_no_ml=False):
@@ -806,6 +886,23 @@ def main():
                         help='Множитель σ для отбраковки станций-выбросов')
     parser.add_argument('--exclude-stations', default=None,
                         help='Исключить станции из расчёта ML (через запятую, например KRNR,LSNR)')
+    parser.add_argument('--ml-stations', choices=['all', 'consistent'], default='all',
+                        help='all (default) — ML по всем станциям события; consistent — только по '
+                             'станциям с согласованным T0 (σ-фильтр validate_associator_v2), при '
+                             'нехватке станций — откат на all для этого события')
+    parser.add_argument('--consistency-sigma', type=float, default=CONSISTENCY_SIGMA,
+                        help=f'С --ml-stations consistent: множитель σ T0-фильтра (default: {CONSISTENCY_SIGMA})')
+    parser.add_argument('--max-station-dist-km', type=float, default=None,
+                        help='Исключить станции дальше этого расстояния от --ref-lat/--ref-lon из '
+                             'расчёта ML и из T0-фильтра (default: выкл.; для кавказской сети — 800)')
+    parser.add_argument('--ref-lat', type=float, default=REF_LAT,
+                        help=f'Опорная точка для --max-station-dist-km, широта (default: {REF_LAT}, Сочи)')
+    parser.add_argument('--ref-lon', type=float, default=REF_LON,
+                        help=f'Опорная точка для --max-station-dist-km, долгота (default: {REF_LON}, Сочи)')
+    parser.add_argument('--station-coords-json', default=DEFAULT_STATION_JSON,
+                        help='Сводный JSON станций с координатами (coords: [lat, lon, elev]) для '
+                             '--max-station-dist-km; недостающие берутся из --metadata-dir '
+                             f'(default: {DEFAULT_STATION_JSON})')
 
     # -- фильтрация каталога --
     parser.add_argument('--ml-threshold',   type=float, default=DEFAULT_THRESHOLD,
@@ -949,20 +1046,42 @@ def main():
     # ── Вычисление ML ─────────────────────────────────────────────────────────
     excl = [s.strip() for s in args.exclude_stations.split(',') if s.strip()] \
            if args.exclude_stations else None
+    if args.max_station_dist_km:
+        coords = load_station_coords(args.metadata_dir)
+        coords.update(load_station_coords_json(args.station_coords_json))
+        all_sta = {s for _, pp, ps, _ in all_events for s in set(pp) | set(ps)}
+        far, unknown = far_stations(all_sta, coords, args.max_station_dist_km,
+                                    args.ref_lat, args.ref_lon)
+        print(f"  Дальше {args.max_station_dist_km:.0f} км от ({args.ref_lat}, {args.ref_lon}): "
+              f"{len(far)} станций {sorted(far)}")
+        if unknown:
+            print(f"  ВНИМАНИЕ: нет координат у {len(unknown)} станций — не отсекаются, "
+                  f"добавьте их в {args.station_coords_json}: {sorted(unknown)}")
+        excl = sorted(set(excl or []) | far)
     if excl:
         print(f"  Исключены станции: {excl}")
 
-    print(f"\nВычисление ML (медиана→{args.ml_outlier_sigma}σ→среднее)...")
+    ml_kwargs = dict(r_min=args.r_min_km, a_nm_min=args.a_nm_min, a_max_nm=args.a_max_nm,
+                     ml_b_log=args.ml_b_log, ml_b_lin=args.ml_b_lin, ml_c=args.ml_c,
+                     n_min_sta=args.n_min_sta, outlier_sigma=args.ml_outlier_sigma,
+                     exclude_stations=excl)
+    print(f"\nВычисление ML (медиана→{args.ml_outlier_sigma}σ→среднее, станции: "
+          f"{args.ml_stations})...")
     ml_by_pubid = {}
-    for pub_id, _, _, r_dict in all_events:
-        ml, _ = compute_event_ml_v2(
-            pub_id, r_dict, amplitudes, sta_corr,
-            r_min=args.r_min_km, a_nm_min=args.a_nm_min, a_max_nm=args.a_max_nm,
-            ml_b_log=args.ml_b_log, ml_b_lin=args.ml_b_lin, ml_c=args.ml_c,
-            n_min_sta=args.n_min_sta, outlier_sigma=args.ml_outlier_sigma,
-            exclude_stations=excl,
-        )
+    n_consistent = 0
+    for pub_id, picks_p, picks_s, r_dict in all_events:
+        if args.ml_stations == 'consistent':
+            cons = consistent_stations(picks_p, picks_s, args.vp, args.vs,
+                                       args.consistency_sigma, CONSISTENCY_R_MIN, excl)
+            ml, _, used = compute_event_ml_v3(pub_id, r_dict, amplitudes, sta_corr,
+                                              consistent=cons, **ml_kwargs)
+            n_consistent += used
+        else:
+            ml, _ = compute_event_ml_v2(pub_id, r_dict, amplitudes, sta_corr, **ml_kwargs)
         ml_by_pubid[pub_id] = ml
+    if args.ml_stations == 'consistent':
+        print(f"  ML по согласованным станциям: {n_consistent}, откат на все станции: "
+              f"{len(all_events) - n_consistent}")
 
     print_distribution(list(ml_by_pubid.values()), ml_by_pubid=ml_by_pubid,
                        ml_b_log=args.ml_b_log, ml_b_lin=args.ml_b_lin, ml_c=args.ml_c)

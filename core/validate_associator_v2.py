@@ -973,6 +973,73 @@ def write_quakeml(filtered_events, output_path):
     print(f"QuakeML записан: {output_path}  ({len(filtered_events)} событий)")
 
 
+def write_quakeml_inliers(processed, station_coords, output_path, min_stations=4):
+    """
+    --out-xml-inliers (Шаг 6 плана): очищенный вход для core/locator.py — те же
+    события (тот же publicID, чтобы hypocenters.csv стыковался с этим модулем), но
+    только пики станций, прошедших σ-фильтр T0 (ae['inliers']). Ассоциатор
+    подмешивает к событию пики далёких станций, не относящихся к нему — на них
+    S-P-расстояние ошибается на сотни км, и LOCSAT уводит решение (раздел 8 плана).
+
+    В отличие от write_quakeml(), origin содержит lat/lon — locator.py берёт их как
+    начальное приближение: координаты ближайшей inlier-станции (min S-P), время —
+    σ-среднее T0 (ot_mean), иначе ot. События без inliers или без координат
+    ближайшей станции не пишутся — locator.py для них просто не даст решения.
+
+    min_stations (--inliers-min-stations, default 4) — событие с меньшим числом
+    согласованных станций в этот файл не пишется, то есть не подаётся в LOCSAT. Из
+    пайплайна оно НЕ удаляется: export_bul.py выводит его как раньше, без координат
+    (fallback для событий без решения). Май 2024 после ML>=1.5: 319 из 548 событий.
+    """
+    import uuid as _uuid
+
+    Q_NS = "http://quakeml.org/xmlns/quakeml/1.2"
+    root = ET.Element(f'{{{Q_NS}}}quakeml', {'xmlns': BED_NS, 'xmlns:q': Q_NS})
+    ep = ET.SubElement(root, 'eventParameters', publicID=f'smi:local/{_uuid.uuid4()}')
+
+    n_written, n_picks_in, n_picks_out = 0, 0, 0
+    for ae in processed:
+        n_picks_in += sum(('p' in i) + ('s' in i) for i in ae['picks_raw'].values())
+        inlier_sta = {e['station'] for e in ae['inliers']}
+        t0 = ae.get('ot_mean') or ae.get('ot')
+        if len(inlier_sta) < max(min_stations, 1) or t0 is None:
+            continue
+        nearest = min(ae['inliers'], key=lambda e: e['dt_sp'])['station']
+        coords  = station_coords.get(nearest)
+        if coords is None:
+            continue
+
+        ev_el   = ET.SubElement(ep, 'event', publicID=ae['pub_id'])
+        orig_id = f'smi:local/{_uuid.uuid4()}'
+        ET.SubElement(ev_el, 'preferredOriginID').text = orig_id
+        orig_el = ET.SubElement(ev_el, 'origin', publicID=orig_id)
+        ET.SubElement(ET.SubElement(orig_el, 'time'), 'value').text = (
+            t0.strftime('%Y-%m-%dT%H:%M:%S.%f') + 'Z')
+        ET.SubElement(ET.SubElement(orig_el, 'latitude'), 'value').text = str(coords[0])
+        ET.SubElement(ET.SubElement(orig_el, 'longitude'), 'value').text = str(coords[1])
+
+        for sta in sorted(inlier_sta):
+            info = ae['picks_raw'].get(sta, {})
+            for phase in ('p', 's'):
+                t_pick = info.get(phase)
+                if t_pick is None:
+                    continue
+                pick_el = ET.SubElement(ev_el, 'pick', publicID=f'smi:local/{_uuid.uuid4()}')
+                ET.SubElement(ET.SubElement(pick_el, 'time'), 'value').text = (
+                    t_pick.strftime('%Y-%m-%dT%H:%M:%S.%f') + 'Z')
+                ET.SubElement(pick_el, 'waveformID',
+                              networkCode=info.get('net', ''), stationCode=sta)
+                ET.SubElement(pick_el, 'methodID').text = 'smi:local/EqTransformer'
+                ET.SubElement(pick_el, 'phaseHint').text = phase.upper()
+                n_picks_out += 1
+        n_written += 1
+
+    ET.indent(root, space='  ')
+    ET.ElementTree(root).write(output_path, encoding='utf-8', xml_declaration=True)
+    print(f"QuakeML (только σ-inliers, станций >= {min_stations}) записан: {output_path}  "
+          f"({n_written} из {len(processed)} событий, пиков {n_picks_out} из {n_picks_in})")
+
+
 def print_flagged_events(processed):
     flagged = [ae for ae in processed if ae['n_flag']]
     if not flagged:
@@ -1050,6 +1117,13 @@ def main():
                              "же физическая величина, что даёт текущий S-P-метод, сравнимая "
                              "между --distance-source sp/locator; epicentral — только "
                              "горизонтальная дистанция, без глубины")
+    parser.add_argument('--out-xml-inliers', default=None,
+                        help="Записать очищенный вход для core/locator.py: все события, "
+                             "только пики станций, прошедших σ-фильтр T0, плюс начальные "
+                             "координаты (ближайшая станция). Читает --metadata-dir")
+    parser.add_argument('--inliers-min-stations', type=int, default=4,
+                        help="С --out-xml-inliers: минимум станций, прошедших σ-фильтр, "
+                             "чтобы событие попало в файл (физическая чистка, default 4)")
     args = parser.parse_args()
 
     k = args.vp * args.vs / (args.vp - args.vs)
@@ -1116,6 +1190,8 @@ def main():
         print(f"R для ML: locator ({args.locator_distance_metric})  "
               f"гипоцентров={len(hypocenters)}  координат станций={len(station_coords)}  "
               f"[фолбэк на sp для событий без сошедшегося решения]  ({args.hypocenters})")
+    if args.out_xml_inliers and station_coords is None:
+        station_coords = load_station_coords(args.metadata_dir)
     print()
 
     matched, missed, processed = validate(
@@ -1133,6 +1209,10 @@ def main():
 
     print_report(matched, missed, processed, args.window, args.sigma, args.show_picks,
                  min_stations=args.min_stations, min_stations_mode=args.min_stations_mode)
+
+    if args.out_xml_inliers:
+        write_quakeml_inliers(processed, station_coords, args.out_xml_inliers,
+                              args.inliers_min_stations)
 
     if args.show_flagged:
         print_flagged_events(processed)

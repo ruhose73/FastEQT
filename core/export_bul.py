@@ -29,7 +29,8 @@ Lat/Lon/Depth и производные от них поля (Smaj/Smin/Az/RMS) 
 Регион в шапке EVENT определяется по административному региону ближайшей
 станции (metadata-25/*.xml, StationXML Site/Name, поле после первой запятой).
 
-Станции дальше --max-station-dist-km от Сочи (по умолчанию 800км) исключаются
+Станции дальше --max-station-dist-km от опорной точки (--ref-lat/--ref-lon, по
+умолчанию Сочи 43.6/40.0; по умолчанию 800км) исключаются
 из расчёта T0/ML целиком — в output_cpu/assoc_input_cpu_2 вперемешку с
 кавказской сетью (макс. ~700км друг от друга) попали опорные станции по всей
 России и даже Антарктиде (см. load_station_coords/filter_far_stations).
@@ -582,6 +583,10 @@ def main():
     parser.add_argument('--max-station-dist-km', type=float, default=DEFAULT_MAX_STATION_DIST_KM,
                         help=f"Станции дальше этого расстояния от Сочи (км) исключаются из расчёта "
                              f"T0/ML (default: {DEFAULT_MAX_STATION_DIST_KM:.0f}); 0/отрицательное — не фильтровать")
+    parser.add_argument('--ref-lat', type=float, default=CAUCASUS_REF_LAT,
+                        help=f"Опорная точка для --max-station-dist-km, широта (default: {CAUCASUS_REF_LAT}, Сочи)")
+    parser.add_argument('--ref-lon', type=float, default=CAUCASUS_REF_LON,
+                        help=f"Опорная точка для --max-station-dist-km, долгота (default: {CAUCASUS_REF_LON}, Сочи)")
     parser.add_argument('--vp', type=float, default=v2.DEFAULT_VP)
     parser.add_argument('--vs', type=float, default=v2.DEFAULT_VS)
     parser.add_argument('--sigma', type=float, default=v2.DEFAULT_SIGMA)
@@ -650,12 +655,13 @@ def main():
     if max_dist is not None:
         station_coords = load_station_coords(args.metadata_dir, args.output_cpu_dir)
         print(f"Координат станций: {len(station_coords)}  "
-              f"(отсев дальше {max_dist:.0f} км от Сочи)")
+              f"(отсев дальше {max_dist:.0f} км от ({args.ref_lat}, {args.ref_lon}))")
 
     processed, excluded_stations = process_events(
         assoc_events, args.vp, args.vs, args.sigma, args.r_min, args.r_max,
         amplitudes, sta_corr, prob_dict,
-        station_coords=station_coords, max_station_dist_km=max_dist)
+        station_coords=station_coords, ref_lat=args.ref_lat, ref_lon=args.ref_lon,
+        max_station_dist_km=max_dist)
     if excluded_stations:
         print(f"Исключено станций (дальше {max_dist:.0f} км): {len(excluded_stations)}  "
               f"[{', '.join(sorted(excluded_stations))}]")

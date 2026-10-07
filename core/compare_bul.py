@@ -19,10 +19,13 @@ compare_bul.py — сравнение двух бюллетеней в форм�
                                 --candidate workspace/bulletin/output/2025_q1.BUL \
                                 --window 60 --min-shared 1
     python core/compare_bul.py ... --show-missed --out-csv compare.csv
+    python core/compare_bul.py ... --min-mag 1.5 --location-error   # + ошибка эпицентра/глубины
 """
 
 import argparse
 import csv
+import math
+import statistics
 from datetime import datetime
 
 
@@ -109,6 +112,155 @@ def _parse_magnitude_value(line):
         return float(val_s)
     except ValueError:
         return None
+
+
+def parse_bul_origins(path):
+    """
+    Координаты первого Origin каждого EVENT, в том же порядке, что события parse_bul():
+    список {'lat', 'lon', 'depth_km', 'rms', 'err_depth'} (None, если поле пустое —
+    например, наш .BUL без --locator-mode enrich). Колонки (1-индексация, включительно,
+    сверены по реальным бюллетеням ГС РАН и ISC — см. export_bul.md): RMS 31-35,
+    Latitude 37-44, Longitude 46-54, Depth 72-76, Err depth 78-82. Как и t0 в
+    parse_bul(), берётся только первый Origin события.
+    """
+    origins = []
+    cur = None
+    with open(path, encoding='utf-8', errors='replace') as f:
+        lines = f.readlines()
+    for i, line in enumerate(lines):
+        if line.startswith('EVENT '):
+            cur = {'lat': None, 'lon': None, 'depth_km': None, 'rms': None,
+                   'err_depth': None, '_seen': False}
+            origins.append(cur)
+            continue
+        if cur is None or cur['_seen']:
+            continue
+        s = line.strip()
+        if s.startswith('Date') and 'Time' in s and 'Latitude' in s and i + 1 < len(lines):
+            o = lines[i + 1]
+            cur['_seen'] = True
+            cur['lat']      = _parse_float(o[36:44])
+            cur['lon']      = _parse_float(o[45:54])
+            cur['depth_km'] = _parse_float(o[71:76])
+            cur['rms']       = _parse_float(o[30:35])
+            cur['err_depth'] = _parse_float(o[77:82])
+    for o in origins:
+        del o['_seen']
+    return origins
+
+
+def _parse_float(s):
+    s = s.strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _haversine_km(lat1, lon1, lat2, lon2):
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi, dl = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def print_location_report(matched):
+    """
+    --location-error: ошибка эпицентра/глубины candidate относительно reference по
+    совпавшим событиям. Считается только там, где координаты есть в обоих бюллетенях
+    (у нашего .BUL — только у событий с решением локатора, export_bul --locator-mode
+    enrich). На recall не влияет.
+    """
+    rows = []
+    for m in matched:
+        ref, cand = m['ref'], m['cand']
+        if None in (ref.get('lat'), ref.get('lon'), cand.get('lat'), cand.get('lon')):
+            continue
+        epi = _haversine_km(ref['lat'], ref['lon'], cand['lat'], cand['lon'])
+        dep = (cand['depth_km'] - ref['depth_km']
+               if cand.get('depth_km') is not None and ref.get('depth_km') is not None else None)
+        rows.append((m, epi, dep))
+
+    print(f"\nОшибка локации (--location-error): координаты есть у {len(rows)} из "
+          f"{len(matched)} совпавших событий")
+    if not rows:
+        return
+    epis = sorted(epi for _, epi, _ in rows)
+    deps = [dep for _, _, dep in rows if dep is not None]
+    print(f"  эпицентр, км: медиана {statistics.median(epis):.1f}  "
+          f"макс {max(epis):.1f}  <=10 км: {sum(e <= 10 for e in epis)}/{len(epis)}")
+    if deps:
+        print(f"  глубина (candidate − reference), км: медиана {statistics.median(deps):+.1f}  "
+              f"|медиана| {statistics.median([abs(d) for d in deps]):.1f}")
+    print(f"  {'Ref origin time':<22} {'Ref id':<10} {'Mag':>5} {'Δэпи,км':>8} {'ΔH,км':>7} "
+          f"{'H_ref':>6} {'H_cand':>6}")
+    for m, epi, dep in sorted(rows, key=lambda x: x[0]['ref']['t0']):
+        ref, cand = m['ref'], m['cand']
+        mag_s = f"{ref['mag']:.1f}" if ref['mag'] is not None else "  -"
+        dep_s = f"{dep:>+7.1f}" if dep is not None else f"{'—':>7}"
+        h_ref = f"{ref['depth_km']:>6.1f}" if ref.get('depth_km') is not None else f"{'—':>6}"
+        h_cnd = f"{cand['depth_km']:>6.1f}" if cand.get('depth_km') is not None else f"{'—':>6}"
+        print(f"  {str(ref['t0']):<22} {ref['event_id'] or '-':<10} {mag_s:>5} {epi:>8.1f} "
+              f"{dep_s} {h_ref} {h_cnd}")
+
+
+def _loc_good(cand, max_rms, min_err_depth):
+    """Решение локатора у candidate хорошее: Err depth > min_err_depth (нет упора глубины в
+    границу таблицы годографов) и RMS < max_rms — тот же критерий, что качество в export_bul."""
+    return (cand.get('err_depth') is not None and cand['err_depth'] > min_err_depth
+            and cand.get('rms') is not None and cand['rms'] < max_rms)
+
+
+def match_events_v2(reference, candidate, window_sec, min_shared, max_dist_km, no_coords_match,
+                    loc_good_only=False, loc_max_rms=2.0, loc_min_err_depth=0.001):
+    """
+    loc_good_only: координаты candidate используются, только если решение хорошее
+    (_loc_good); candidate с плохим решением сопоставляется как событие без координат —
+    плохая локация не должна делать найденное событие «не найденным».
+
+    --match-mode location: candidate с координатами совпадает с reference, если |dt| <= окна и
+    эпицентры ближе max_dist_km (общие станции не требуются — состав станций у нас и в
+    бюллетене может различаться). Если координат нет у candidate или у reference —
+    no_coords_match: 'time' (только окно по времени) или 'stations' (окно + >= min_shared
+    общих станций, как в match_events()). Среди подходящих выбирается совпавший по месту
+    (ближайший по расстоянию), иначе ближайший по времени.
+    """
+    matched, missed = [], []
+    for ref in reference:
+        if ref['t0'] is None:
+            missed.append(ref)
+            continue
+        best, best_key = None, None
+        for cand in candidate:
+            if cand['t0'] is None:
+                continue
+            dt = (cand['t0'] - ref['t0']).total_seconds()
+            if abs(dt) > window_sec:
+                continue
+            shared = ref['stations'] & cand['stations']
+            have_xy = None not in (ref.get('lat'), ref.get('lon'), cand.get('lat'), cand.get('lon'))
+            if have_xy and loc_good_only and not _loc_good(cand, loc_max_rms, loc_min_err_depth):
+                have_xy = False
+            if have_xy:
+                dist = _haversine_km(ref['lat'], ref['lon'], cand['lat'], cand['lon'])
+                if dist > max_dist_km:
+                    continue
+                key, by = (0, dist, abs(dt)), 'location'
+            else:
+                if no_coords_match == 'stations' and len(shared) < min_shared:
+                    continue
+                key, by = (1, 0.0, abs(dt)), no_coords_match
+            if best_key is None or key < best_key:
+                best, best_key = {'ref': ref, 'cand': cand, 'dt': dt, 'shared': shared,
+                                  'by': by}, key
+        if best is not None:
+            matched.append(best)
+        else:
+            missed.append(ref)
+    return matched, missed
 
 
 def match_events(reference, candidate, window_sec, min_shared):
@@ -215,10 +367,37 @@ def main():
                         help="Фильтр reference по месяцу (t0), до сравнения")
     parser.add_argument('--show-missed', action='store_true')
     parser.add_argument('--out-csv', default=None)
+    parser.add_argument('--location-error', action='store_true',
+                        help="Дополнительно: ошибка эпицентра/глубины candidate против reference "
+                             "по совпавшим событиям, где координаты есть в обоих бюллетенях "
+                             "(candidate — из export_bul.py --locator-mode enrich)")
+    parser.add_argument('--match-mode', choices=['stations', 'location'], default='stations',
+                        help="stations (default) — время + общие станции, как раньше; location — "
+                             "для событий с координатами в обоих бюллетенях: время + расстояние "
+                             "между эпицентрами <= --max-dist-km, без требования общих станций")
+    parser.add_argument('--max-dist-km', type=float, default=50.0,
+                        help="С --match-mode location: максимальное расстояние между эпицентрами, км "
+                             "(default: 50)")
+    parser.add_argument('--no-coords-match', choices=['stations', 'time'], default='stations',
+                        help="С --match-mode location: как сопоставлять события без координат — "
+                             "stations (default): время + --min-shared общих станций; time: только время")
+    parser.add_argument('--loc-good-only', action='store_true',
+                        help="С --match-mode location: по месту сопоставлять только события candidate "
+                             "с хорошим решением локатора (Err depth > --loc-min-err-depth и RMS < "
+                             "--loc-max-rms); остальные — как события без координат (--no-coords-match)")
+    parser.add_argument('--loc-max-rms', type=float, default=2.0,
+                        help="С --loc-good-only: максимальный RMS решения, с (default: 2.0)")
+    parser.add_argument('--loc-min-err-depth', type=float, default=0.001,
+                        help="С --loc-good-only: Err depth должна быть больше этого, км (default: 0.001 — "
+                             "0 означает упор глубины в границу таблицы годографов)")
     args = parser.parse_args()
 
     reference = parse_bul(args.reference)
     candidate = parse_bul(args.candidate)
+    if args.location_error or args.match_mode == 'location':
+        for events, path in ((reference, args.reference), (candidate, args.candidate)):
+            for ev, org in zip(events, parse_bul_origins(path)):
+                ev.update(org)
     print(f"Reference: {args.reference}  ({len(reference)} событий)")
     print(f"Candidate: {args.candidate}  ({len(candidate)} событий)")
 
@@ -244,8 +423,22 @@ def main():
         print(f"Candidate после фильтра ML >= {args.min_cand_mag}: {len(candidate)} (из {before}; "
               f"{no_mag} без вычисленной ML)")
 
-    matched, missed = match_events(reference, candidate, args.window, args.min_shared)
+    if args.match_mode == 'location':
+        matched, missed = match_events_v2(reference, candidate, args.window, args.min_shared,
+                                          args.max_dist_km, args.no_coords_match,
+                                          args.loc_good_only, args.loc_max_rms,
+                                          args.loc_min_err_depth)
+        n_loc = sum(1 for m in matched if m['by'] == 'location')
+        good_s = (f" (только хорошие решения: RMS < {args.loc_max_rms}, Err depth > "
+                  f"{args.loc_min_err_depth})" if args.loc_good_only else "")
+        print(f"Сопоставление: время ±{args.window:.0f}с + эпицентр <= {args.max_dist_km:.0f} км"
+              f"{good_s}; без координат — {args.no_coords_match}. По месту: {n_loc}, "
+              f"без координат: {len(matched) - n_loc}")
+    else:
+        matched, missed = match_events(reference, candidate, args.window, args.min_shared)
     print_report(matched, missed, reference, candidate, args.window, args.min_shared, args.show_missed)
+    if args.location_error:
+        print_location_report(matched)
 
     if args.out_csv:
         write_csv(matched, missed, args.out_csv)
