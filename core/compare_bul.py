@@ -149,6 +149,31 @@ def parse_bul_origins(path):
     return origins
 
 
+def parse_bul_energy_class(path):
+    """
+    Энергетический класс K первого '(#PARAM Energy_class=…)' каждого EVENT, в порядке
+    parse_bul() (None, если строки нет). ГС РАН пишет его у каждого Origin; берётся первый —
+    тот же «первый Origin», что и t0 в parse_bul().
+    """
+    out, cur = [], None
+    with open(path, encoding='utf-8', errors='replace') as f:
+        for line in f:
+            if line.startswith('EVENT '):
+                cur = [None]
+                out.append(cur)
+                continue
+            if cur is not None and cur[0] is None and 'Energy_class=' in line:
+                cur[0] = _parse_float(line.split('Energy_class=')[1].split(')')[0])
+    return [c[0] for c in out]
+
+
+def mag_from_energy_class(k):
+    """Магнитуда из энергетического класса по формуле Раутиан K = 4 + 1.8·M. Так получена
+    колонка Ms в catalog.xlsx (проверено на 48 общих с бюллетенем событиях 2024); по шкале
+    близка к нашей ML (ml_filter_v5), в отличие от MPVA (магнитуда по P-волне, на ~1.2 выше)."""
+    return (k - 4.0) / 1.8 if k is not None else None
+
+
 def _parse_float(s):
     s = s.strip()
     if not s:
@@ -357,7 +382,12 @@ def main():
     parser.add_argument('--min-shared', type=int, default=1,
                         help="Минимум общих станций для совпадения (default: 1)")
     parser.add_argument('--min-mag', type=float, default=None,
-                        help="Фильтр reference по магнитуде (MPVA) >= порога, до сравнения")
+                        help="Фильтр reference по магнитуде >= порога, до сравнения "
+                             "(какая магнитуда — --ref-mag-type)")
+    parser.add_argument('--ref-mag-type', choices=['mpva', 'kp'], default='mpva',
+                        help="Магнитуда reference для --min-mag: mpva (default) — первая строка "
+                             "Magnitude Block (у ГС РАН это MPVA, по P-волне); kp — из энергетического "
+                             "класса, M = (K − 4)/1.8 (шкала, близкая к нашей ML)")
     parser.add_argument('--min-cand-mag', type=float, default=None,
                         help="Фильтр candidate (наша ML) >= порога, до сравнения — "
                              "события без вычисленной ML тоже отбрасываются")
@@ -394,6 +424,10 @@ def main():
 
     reference = parse_bul(args.reference)
     candidate = parse_bul(args.candidate)
+    if args.ref_mag_type == 'kp':
+        for ev, k in zip(reference, parse_bul_energy_class(args.reference)):
+            ev['mag'] = mag_from_energy_class(k)
+        print("Магнитуда reference: из энергетического класса, M = (K − 4)/1.8")
     if args.location_error or args.match_mode == 'location':
         for events, path in ((reference, args.reference), (candidate, args.candidate)):
             for ev, org in zip(events, parse_bul_origins(path)):
