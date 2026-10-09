@@ -512,7 +512,40 @@ def fmt_pick_line(sta, phase, t, snr, amp_nm, mag_val, arr_id):
     return ''.join(c).rstrip()
 
 
-def write_bul(processed, region_map, amplitudes, p_snr_dict, s_snr_dict, out_path):
+def _dist_az_deg(ev_lat, ev_lon, st_lat, st_lon):
+    """
+    Эпицентральное расстояние (градусы дуги) и азимут очаг → станция (градусы от севера по
+    часовой стрелке, 0–360) на сфере — поля Dist/EvAz строки фазы IMS1.0.
+    """
+    p1, p2 = math.radians(ev_lat), math.radians(st_lat)
+    dl = math.radians(st_lon - ev_lon)
+    cos_d = math.sin(p1) * math.sin(p2) + math.cos(p1) * math.cos(p2) * math.cos(dl)
+    dist = math.degrees(math.acos(max(-1.0, min(1.0, cos_d))))
+    az = math.degrees(math.atan2(math.sin(dl) * math.cos(p2),
+                                 math.cos(p1) * math.sin(p2)
+                                 - math.sin(p1) * math.cos(p2) * math.cos(dl))) % 360.0
+    return dist, az
+
+
+def fmt_pick_line_v2(sta, phase, t, snr, amp_nm, mag_val, arr_id, dist_deg=None, evaz=None):
+    """
+    Как fmt_pick_line(), плюс Dist (cols 7-12, градусы) и EvAz (cols 14-18, азимут очаг →
+    станция), если переданы. Без них строка побайтово как у fmt_pick_line(). Dist < 1° —
+    без ведущего нуля (".86"), как в бюллетене ГС РАН.
+    """
+    c = list(fmt_pick_line(sta, phase, t, snr, amp_nm, mag_val, arr_id))
+    if dist_deg is not None:
+        s = _fmt_fit(dist_deg, 6, 2)
+        if s.startswith('0.'):
+            s = s[1:]
+        _put(c, 7, 12, s)
+    if evaz is not None:
+        _put(c, 14, 18, f"{evaz:.1f}")
+    return ''.join(c).rstrip()
+
+
+def write_bul(processed, region_map, amplitudes, p_snr_dict, s_snr_dict, out_path,
+              station_coords=None):
     orig_id = 0
     arr_id  = 0
     with open(out_path, 'w', encoding='utf-8') as f:
@@ -549,10 +582,15 @@ def write_bul(processed, region_map, amplitudes, p_snr_dict, s_snr_dict, out_pat
             for sta, picks in sorted(ae['picks_raw'].items(),
                                       key=lambda kv: kv[1].get('p') or kv[1].get('s')):
                 regime = regime_by_sta.get(sta, 'Pg')  # Pg или Pn
+                # Dist/EvAz — только если есть решение локатора и координаты станции
+                dist_deg = evaz = None
+                if loc and loc['converged'] and station_coords and sta in station_coords:
+                    dist_deg, evaz = _dist_az_deg(loc['lat'], loc['lon'], *station_coords[sta])
                 if 'p' in picks:
                     arr_id += 1
                     snr = p_snr_dict.get((sta, round(picks['p'].timestamp(), 3)))
-                    f.write(fmt_pick_line(sta, regime, picks['p'], snr, None, None, arr_id) + "\n")
+                    f.write(fmt_pick_line_v2(sta, regime, picks['p'], snr, None, None, arr_id,
+                                             dist_deg, evaz) + "\n")
                 if 's' in picks:
                     arr_id += 1
                     s_phase = 'Sg' if regime == 'Pg' else 'Sn'
@@ -560,7 +598,8 @@ def write_bul(processed, region_map, amplitudes, p_snr_dict, s_snr_dict, out_pat
                     amp    = amplitudes.get((ae['pub_id'], sta)) if amplitudes else None
                     amp_nm = amp * 1e9 if amp else None
                     ml_val = ae['ml_per_sta'].get(sta)
-                    f.write(fmt_pick_line(sta, s_phase, picks['s'], snr, amp_nm, ml_val, arr_id) + "\n")
+                    f.write(fmt_pick_line_v2(sta, s_phase, picks['s'], snr, amp_nm, ml_val, arr_id,
+                                             dist_deg, evaz) + "\n")
             f.write("\n")
 
         f.write("STOP\n")
@@ -668,6 +707,8 @@ def main():
     print(f"Событий после T0/sigma-фильтра: {len(processed)}")
 
     if args.locator_mode != 'off':
+        if station_coords is None:   # для Dist/EvAz в строках фаз
+            station_coords = load_station_coords(args.metadata_dir, args.output_cpu_dir)
         hypocenters = load_hypocenters(args.hypocenters)
         print(f"Гипоцентров загружено: {len(hypocenters)}  ({args.hypocenters})")
         n_enriched = 0
@@ -704,7 +745,8 @@ def main():
 
     p_snr_dict = {k: v['snr'] for k, v in prob_dict.items()}
     os.makedirs(os.path.dirname(os.path.abspath(args.out)) or '.', exist_ok=True)
-    write_bul(processed, region_map, amplitudes, p_snr_dict, s_snr_dict, args.out)
+    write_bul(processed, region_map, amplitudes, p_snr_dict, s_snr_dict, args.out,
+              station_coords=station_coords if args.locator_mode != 'off' else None)
 
 
 if __name__ == "__main__":
