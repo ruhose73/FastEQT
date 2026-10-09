@@ -196,6 +196,110 @@ def geofile_splitter_multi_chanels_v3(base_directory, date_from, date_to):
     print(f"✅ Всего сегментов обработано генератором: {total_yielded}")
 
 
+def geofile_splitter_multi_chanels_v4(base_directory, date_from, date_to):
+    """
+    v4: как v3, но суточный файл с разрывами обрабатывается целиком.
+
+    v3 брал конец данных у первого куска первой трассы (st_all[0].stats.endtime): если в
+    суточном файле есть хотя бы один разрыв (запись = несколько трасс на канал), всё после
+    первого разрыва не нарезалось вообще. Май 2024: ~10% станционных данных, у отдельных
+    станций (NEUR, PXTR, URKR, UNCR) — от половины до почти всего месяца.
+
+    v4: куски каждого канала склеиваются (merge(method=1, fill_value='interpolate') —
+    разрыв заполняется линейной интерполяцией, без ступенек на краях, которые фильтр
+    превратил бы в ложные детекции); окна идут по всему диапазону суток
+    [min starttime, max endtime] по всем каналам. Если merge не удался (разная частота
+    кусков и т.п.) — группа обрабатывается как в v3.
+    """
+    pattern = re.compile(
+        r'^(?P<net>[A-Z0-9]+)\.'
+        r'(?P<sta>[A-Z0-9]+)\.'
+        r'(?P<loc>[A-Z0-9]{0,2})\.'
+        r'(?P<cha>[A-Z0-9]+)\.[A-Z_]*__'
+        r'(?P<start>\d{8}T\d{6}Z)__'
+        r'(?P<end>\d{8}T\d{6}Z)$'
+    )
+
+    files = [f for f in os.listdir(base_directory)
+             if os.path.isfile(os.path.join(base_directory, f))]
+    station_groups = {}
+
+    for file_name in files:
+        match = pattern.match(file_name)
+        if not match:
+            print(f"⚠️ Пропускаем файл: {file_name} — не подходит под шаблон")
+            continue
+        key = f"{match.group('sta')}_{match.group('start')}"
+        station_groups.setdefault(key, []).append(os.path.join(base_directory, file_name))
+
+    total_yielded = 0
+
+    for key, file_list in sorted(station_groups.items()):
+        try:
+            st_all = Stream()
+            for fpath in file_list:
+                try:
+                    st_all += read(fpath)
+                except Exception as e:
+                    print(f"Ошибка чтения {fpath}: {e}")
+
+            if len(st_all) < 2:
+                print(f"⚠️ Пропускаем {key}: найдено только {len(st_all)} канал(ов)")
+                del st_all
+                continue
+
+            tr0 = st_all[0]
+            if not (date_from <= tr0.stats.starttime < date_to):
+                del st_all
+                continue
+
+            n_before = len(st_all)
+            try:
+                st_all.merge(method=1, fill_value='interpolate')
+                start_time = min(tr.stats.starttime for tr in st_all)
+                end_time = max(tr.stats.endtime for tr in st_all)
+            except Exception as e:
+                print(f"⚠️ {key}: merge не удался ({e}) — как в v3, только до первого разрыва")
+                start_time, end_time = tr0.stats.starttime, tr0.stats.endtime
+            if n_before > len(st_all):
+                print(f"ℹ️ {key}: склеено {n_before} кусков в {len(st_all)} трасс(ы)")
+
+            window_length = 10 * 60
+            step = 5 * 60
+            t = start_time
+
+            while t + window_length <= end_time:
+                segment = st_all.slice(t, t + window_length)
+                if len(segment) >= 2 and all(tr.stats.npts > 0 for tr in segment):
+                    seg_name = (
+                        f"{tr0.stats.network}.{tr0.stats.station}__"
+                        f"{t.strftime('%Y%m%dT%H%M%SZ')}__"
+                        f"{(t + window_length).strftime('%Y%m%dT%H%M%SZ')}"
+                    )
+                    total_yielded += 1
+                    yield (segment, seg_name)
+                t += step
+
+            if t < end_time:
+                segment = st_all.slice(end_time - window_length, end_time)
+                if len(segment) >= 2 and all(tr.stats.npts > 0 for tr in segment):
+                    seg_name = (
+                        f"{tr0.stats.network}.{tr0.stats.station}__"
+                        f"{(end_time - window_length).strftime('%Y%m%dT%H%M%SZ')}__"
+                        f"{end_time.strftime('%Y%m%dT%H%M%SZ')}"
+                    )
+                    total_yielded += 1
+                    yield (segment, seg_name)
+
+        except Exception as e:
+            print(f"❌ Ошибка обработки группы {key}: {e}")
+        finally:
+            if 'st_all' in dir():
+                del st_all
+
+    print(f"✅ Всего сегментов обработано генератором: {total_yielded}")
+
+
 def worker_v4(segment_item, model, save_figs=None, number_of_plots=None,
               estimate_uncertainty=False, number_of_sampling=10,
               detection_threshold=DETECTION_THRESHOLD, P_threshold=P_THRESHOLD,
@@ -415,6 +519,40 @@ def process_station_v3(base_directory, stations_json, model,
     )
 
 
+def process_station_v4(base_directory, stations_json, model,
+                        date_from, date_to, output_base_dir,
+                        estimate_uncertainty=False, number_of_sampling=10,
+                        log_file=LOG_FILE,
+                        detection_threshold=DETECTION_THRESHOLD, P_threshold=P_THRESHOLD,
+                        S_threshold=S_THRESHOLD, keep_ps=KEEP_PS, allow_only_s=ALLOW_ONLY_S,
+                        sp_limit=SP_LIMIT, batch_size=BATCH_SIZE):
+    """
+    Как process_station_v3, но нарезка — geofile_splitter_multi_chanels_v4 (суточный файл
+    с разрывами обрабатывается целиком, а не до первого разрыва).
+    """
+    station_name = os.path.basename(os.path.normpath(base_directory))
+    output_dir = os.path.join(output_base_dir, station_name)
+    output_csv = os.path.join(output_dir, f"{station_name.lower()}.csv")
+
+    segment_gen = geofile_splitter_multi_chanels_v4(base_directory, date_from, date_to)
+    preproc_sequential_v5(
+        segment_gen, stations_json, model,
+        output_csv=output_csv,
+        save_figs=None,
+        number_of_plots=10,
+        estimate_uncertainty=estimate_uncertainty,
+        number_of_sampling=number_of_sampling,
+        log_file=log_file,
+        detection_threshold=detection_threshold,
+        P_threshold=P_threshold,
+        S_threshold=S_threshold,
+        keep_ps=keep_ps,
+        allow_only_s=allow_only_s,
+        sp_limit=sp_limit,
+        batch_size=batch_size,
+    )
+
+
 def _build_stations(codes, input_dir, json_dir):
     """Достраивает пары (входная_директория, station_*.json) по кодам станций."""
     return [
@@ -459,6 +597,10 @@ def _parse_args():
     parser.add_argument('--sp-limit', type=float, default=SP_LIMIT,
                         help="Максимальное расстояние S-P (км) для допустимого пика")
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE)
+    parser.add_argument('--gap-mode', choices=['first-trace', 'merge'], default='first-trace',
+                        help="Суточный файл с разрывами: first-trace — как раньше, только до первого "
+                             "разрыва (process_station_v3); merge — склеить куски и обработать сутки "
+                             "целиком (process_station_v4)")
     return parser.parse_args()
 
 
@@ -484,12 +626,13 @@ if __name__ == "__main__":
             pass
 
     model = load_model_cudnn_v2(args.model_path)
+    process_station = process_station_v4 if args.gap_mode == 'merge' else process_station_v3
 
     ok = err = 0
     for bd, sj in stations:
         station_name = os.path.basename(os.path.normpath(bd))
         try:
-            process_station_v3(
+            process_station(
                 bd, sj, model, date_from, date_to, args.output_base_dir,
                 estimate_uncertainty=args.estimate_uncertainty,
                 number_of_sampling=args.number_of_sampling,

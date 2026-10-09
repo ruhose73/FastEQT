@@ -28,6 +28,7 @@
 | `--date-from` / `--date-to` | `DATE_FROM` / `DATE_TO` | диапазон дат (строка, парсится через `UTCDateTime`), правая граница не включается — тот же флаг, что и в `cpu_pipeline.py` |
 | `--estimate-uncertainty`(`--no-estimate-uncertainty`) / `--number-of-sampling` | `ESTIMATE_UNCERTAINTY` / `NUMBER_OF_SAMPLING` | раньше зашиты прямо в вызове `process_station_v3` внутри `run_station` (`estimate_uncertainty=True, number_of_sampling=5`) — теперь CLI-флаги |
 | `--detection-threshold` / `--p-threshold` / `--s-threshold` / `--keep-ps`(`--no-keep-ps`) / `--allow-only-s` / `--sp-limit` / `--batch-size` | одноимённые константы | пороги предиктора, раньше зашитые в `worker_v4` внутри `detector.py` (см. `detector.md`) |
+| `--gap-mode {first-trace,merge}` | `first-trace` | суточный файл с разрывами: `first-trace` — как раньше, только до первого разрыва (`process_station_v3`); `merge` — склеить куски и обработать сутки целиком (`process_station_v4`). Выбор функции — в `run_station`, `gap_mode` — 7-й элемент кортежа задачи. Подробности и масштаб потерь — `detector.md`, раздел про `geofile_splitter_multi_chanels_v4` |
 
 ---
 

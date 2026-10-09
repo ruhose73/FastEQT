@@ -108,10 +108,12 @@ def _init_worker(model_path, tf_threads):
 def run_station(args):
     """Обрабатывает одну станцию используя уже загруженную модель."""
     (base_directory, stations_json, date_from, date_to, output_base_dir,
-     thresholds) = args
+     thresholds, gap_mode) = args
     station_name = os.path.basename(os.path.normpath(base_directory))
+    process_station = (_detector_mod.process_station_v4 if gap_mode == 'merge'
+                       else _detector_mod.process_station_v3)
     try:
-        _detector_mod.process_station_v3(
+        process_station(
             base_directory=base_directory,
             stations_json=stations_json,
             model=_model,
@@ -164,6 +166,10 @@ def _parse_args():
                         help="MC Dropout неопределённость (медленнее — number-of-sampling проходов на сегмент)")
     parser.add_argument('--number-of-sampling', type=int, default=10)
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE)
+    parser.add_argument('--gap-mode', choices=['first-trace', 'merge'], default='first-trace',
+                        help="Суточный файл с разрывами: first-trace — как раньше, только до первого "
+                             "разрыва (process_station_v3); merge — склеить куски и обработать сутки "
+                             "целиком (process_station_v4)")
     return parser.parse_args()
 
 
@@ -194,7 +200,7 @@ if __name__ == "__main__":
     )
 
     tasks = [
-        (bd, sj, date_from, date_to, args.output_base_dir, thresholds)
+        (bd, sj, date_from, date_to, args.output_base_dir, thresholds, args.gap_mode)
         for bd, sj in stations
     ]
 
