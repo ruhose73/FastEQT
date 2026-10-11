@@ -686,6 +686,7 @@ PTT_R_TOL_KM   = 30.0                     # |R_sp − R_точки| <= max(PTT_R
 PTT_R_TOL_FRAC = 0.3                      #                          PTT_R_TOL_FRAC · R_точки)
 PTT_DEPTH_KM   = 15.0                     # фиксированная глубина для R от точки
 PTT_GRID       = (39.0, 47.0, 36.0, 50.0, 0.1)   # lat_min, lat_max, lon_min, lon_max, шаг °
+PTT_SELECT_S_TOL = 4.0                    # с: locate_ps — допуск S к T0 якоря при выборе узла
 
 
 def load_tt_table(path, min_n=PTT_TT_MIN_N):
@@ -757,8 +758,46 @@ class PTravelTimeLocator:
         k = int(np.argmin(res))
         g, a = g_idx[k], a_idx[k]
         mask = close[g, :, a]
-        inl = {stas[i] for i in range(len(stas)) if mask[i]}
+        return self._refine(stas, D, T0, mask, picks_s, t_ref)
 
+    def locate_ps(self, picks_p, picks_s=None, s_tol_select=PTT_SELECT_S_TOL):
+        """
+        Как locate(), но узел и якорь выбираются по сумме: своих по P + своих, у которых S тоже
+        согласуется с узлом (T0 по S = S − vpvs·tP(d) в ±s_tol_select от T0 якоря); узлы, где своих
+        по P меньше min_in, не рассматриваются. Свои станции — по-прежнему только по P. На
+        событиях, где чужая группа P-пиков побеждает по числу, выигрывает группа, подтверждённая S.
+        Используется для --out-xml-ptt (вход LOCSAT); ML (compute_event_ml_ptt) — на locate(),
+        потому что P+S в ML поднимает выдачу на 17% без прироста recall (май 2024, 2026-10-11).
+        """
+        stas = [s for s in picks_p if s in self.coords]
+        if len(stas) < self.min_in:
+            return None, None, None
+        t_ref = min(picks_p[s] for s in stas)
+        D = np.stack([self.dist_grid(s) for s in stas], axis=1)              # G × N
+        P = np.array([(picks_p[s] - t_ref).total_seconds() for s in stas])
+        T0 = P[None, :] - self.tp(D)                                          # G × N
+        close = np.abs(T0[:, :, None] - T0[:, None, :]) <= self.p_tol         # G × N × N (симметр.)
+        cnt = close.sum(axis=1)                                               # G × якорь
+        if cnt.max() < self.min_in:
+            return None, None, None
+        S = np.array([(picks_s[s] - t_ref).total_seconds() if picks_s and s in picks_s else np.nan
+                      for s in stas])
+        T0S = S[None, :] - self.vpvs * self.tp(D)                             # G × N, nan без S
+        s_ok = np.abs(T0S[:, None, :] - T0[:, :, None]) <= s_tol_select       # G × якорь × N
+        score = cnt + (close & s_ok).sum(axis=2)
+        valid = cnt >= self.min_in
+        g_idx, a_idx = np.nonzero(valid & (score == np.where(valid, score, -1).max()))
+        res = np.where(close[g_idx, :, a_idx],
+                       np.abs(T0[g_idx] - T0[g_idx, a_idx][:, None]), 0).sum(axis=1)
+        k = int(np.argmin(res))
+        g, a = g_idx[k], a_idx[k]
+        mask = close[g, :, a]
+        return self._refine(stas, D, T0, mask, picks_s, t_ref)
+
+    def _refine(self, stas, D, T0, mask, picks_s, t_ref):
+        """Этап 2 locate()/locate_ps(): при фиксированных своих (mask) — узел с минимальной
+        дисперсией T0 по P своих и согласных S своих."""
+        inl = {stas[i] for i in range(len(stas)) if mask[i]}
         T0p = T0[:, mask]
         t0s = {i: (picks_s[s] - t_ref).total_seconds() - self.vpvs * self.tp(D[:, i])
                for i, s in enumerate(stas) if mask[i] and picks_s and s in picks_s}
@@ -816,7 +855,7 @@ def compute_event_ml_ptt(pub_id, picks_p, picks_s, r_dict, amplitudes, sta_corr,
 
 def write_quakeml_ptt(tree, events, keep_ids, locator, out_path, exclude_stations=None,
                       vp=VP, vs=VS, r_tol_km=PTT_R_TOL_KM, r_tol_frac=PTT_R_TOL_FRAC,
-                      depth_km=PTT_DEPTH_KM):
+                      depth_km=PTT_DEPTH_KM, select='ps', s_tol_select=PTT_SELECT_S_TOL):
     """
     --out-xml-ptt (2026-10-11): вход для core/locator.py вместо validate_associator_v2.py
     --out-xml-inliers. Для событий из keep_ids (прошедших порог ML), которые локализуются
@@ -825,6 +864,9 @@ def write_quakeml_ptt(tree, events, keep_ids, locator, out_path, exclude_station
     не подаётся). Начальное приближение origin — точка перебора и T0 по P своих. Тот же
     publicID события — hypocenters.csv стыкуется с export_bul.py. Не локализованные события не
     пишутся (export_bul выводит их без координат). events — parse_xml_full(tree).
+    select='ps' (default) — узел выбирается PTravelTimeLocator.locate_ps() (P + согласные S),
+    'p' — locate(), как в ML. Май/апрель 2024: события бюллетеня с координатами 36 → 41 из 42,
+    14 → 17 из 18 (раздел --out-xml-ptt в ml_filter_v5.md).
     """
     from datetime import timedelta
     excl = set(exclude_stations) if exclude_stations else set()
@@ -841,7 +883,10 @@ def write_quakeml_ptt(tree, events, keep_ids, locator, out_path, exclude_station
             continue
         n_in += 1
         pp = {s: t for s, t in picks_p.items() if s not in excl}
-        inl, epi, pt = locator.locate(pp, picks_s)
+        if select == 'ps':
+            inl, epi, pt = locator.locate_ps(pp, picks_s, s_tol_select)
+        else:
+            inl, epi, pt = locator.locate(pp, picks_s)
         if inl is None:
             continue
         t_ref = min(pp[s] for s in pp if s in locator.coords)
@@ -1143,6 +1188,11 @@ def main():
                         help='Дополнительно записать вход для core/locator.py: события, прошедшие '
                              'порог ML, только свои станции по P-годографу (P + согласные с точкой S), '
                              'начальное приближение — точка перебора. Работает при любом --ml-stations')
+    parser.add_argument('--ptt-locsat-select', choices=['ps', 'p'], default='ps',
+                        help='С --out-xml-ptt: выбор точки перебора для входа LOCSAT. ps (default) — '
+                             'по своим P + согласным S; p — только по P, как в ML')
+    parser.add_argument('--ptt-select-s-tol', type=float, default=PTT_SELECT_S_TOL,
+                        help='С --ptt-locsat-select ps: допуск S к T0 якоря при выборе узла, с')
 
     # -- фильтрация каталога --
     parser.add_argument('--ml-threshold',   type=float, default=DEFAULT_THRESHOLD,
@@ -1405,7 +1455,8 @@ def main():
         write_quakeml_ptt(tree, events_full, keep_ids, locator, args.out_xml_ptt,
                           exclude_stations=excl, vp=args.vp, vs=args.vs,
                           r_tol_km=args.ptt_r_tol_km, r_tol_frac=args.ptt_r_tol_frac,
-                          depth_km=args.ptt_depth_km)
+                          depth_km=args.ptt_depth_km, select=args.ptt_locsat_select,
+                          s_tol_select=args.ptt_select_s_tol)
 
 
 if __name__ == '__main__':
