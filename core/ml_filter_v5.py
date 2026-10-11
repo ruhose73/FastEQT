@@ -924,6 +924,54 @@ def write_quakeml_ptt(tree, events, keep_ids, locator, out_path, exclude_station
           f"с точкой {n_s_drop})")
 
 
+def drop_far_picks(out_path, events, locator, max_km, exclude_stations=None,
+                   select='ps', s_tol_select=PTT_SELECT_S_TOL):
+    """
+    --drop-far-from-origin-km (2026-10-11): в уже записанном выходном XML убрать пики (P и S) станций
+    дальше max_km от очага события, найденного перебором (та же точка, что в --out-xml-ptt: select
+    'ps' — locate_ps, 'p' — locate). Ассоциатор добавляет к событию далёкие станции, не относящиеся к
+    нему (~43% станций событий не совпадают с бюллетенем ГС РАН) — они попадают в бюллетень. События
+    без очага и станции без координат не меняются. ML уже посчитана и не пересчитывается.
+    Май/апрель 2024, 2025 Q1 при 400 км: recall тот же, станций из бюллетеня у найденных событий
+    73/61/71% → 87/75/85%, export_bul пишет на 10–25% событий меньше (державшихся на дальних станциях).
+    events — parse_xml_full() исходного дерева (пики до фильтрации).
+    """
+    excl = set(exclude_stations) if exclude_stations else set()
+    picks_by_id = {pub_id: (pp, ps) for _, pub_id, _, pp, ps in events}
+    tree = ET.parse(out_path)
+    ns = BED_NS
+    n_ev = n_cut = n_rm = 0
+    for ev in tree.getroot().iter(f'{{{ns}}}event'):
+        pub_id = ev.get('publicID', '')
+        if pub_id not in picks_by_id:
+            continue
+        n_ev += 1
+        picks_p, picks_s = picks_by_id[pub_id]
+        pp = {s: t for s, t in picks_p.items() if s not in excl}
+        if select == 'ps':
+            inl, _, pt = locator.locate_ps(pp, picks_s, s_tol_select)
+        else:
+            inl, _, pt = locator.locate(pp, picks_s)
+        if inl is None:
+            continue
+        rm_ids = set()
+        for pick in ev.findall(f'{{{ns}}}pick'):
+            wf = pick.find(f'{{{ns}}}waveformID')
+            c = locator.coords.get(wf.get('stationCode', '').strip()) if wf is not None else None
+            if c is not None and _haversine_km(pt[0], pt[1], c[0], c[1]) > max_km:
+                rm_ids.add(pick.get('publicID'))
+                ev.remove(pick)
+        for orig in ev.findall(f'{{{ns}}}origin'):
+            for arr in orig.findall(f'{{{ns}}}arrival'):
+                if arr.findtext(f'{{{ns}}}pickID') in rm_ids:
+                    orig.remove(arr)
+        n_cut += bool(rm_ids)
+        n_rm += len(rm_ids)
+    tree.write(out_path, encoding='unicode', xml_declaration=True)
+    print(f"  Станции дальше {max_km:.0f} км от очага перебора убраны: {n_rm} пиков в {n_cut} из "
+          f"{n_ev} событий ({out_path})")
+
+
 # ── Фильтрация XML ────────────────────────────────────────────────────────────
 
 def filter_xml(tree, ml_by_pubid, threshold, out_path, keep_no_ml=False):
@@ -1193,6 +1241,11 @@ def main():
                              'по своим P + согласным S; p — только по P, как в ML')
     parser.add_argument('--ptt-select-s-tol', type=float, default=PTT_SELECT_S_TOL,
                         help='С --ptt-locsat-select ps: допуск S к T0 якоря при выборе узла, с')
+    parser.add_argument('--drop-far-from-origin-km', type=float, default=None,
+                        help='Убрать из выходного XML пики станций дальше этого расстояния от очага '
+                             'события, найденного перебором по P-годографу (точка как в --out-xml-ptt; '
+                             'события без очага не меняются; ML не пересчитывается). Default: выкл.; '
+                             'проверено значение 400 км — recall тот же, бюллетень чище')
 
     # -- фильтрация каталога --
     parser.add_argument('--ml-threshold',   type=float, default=DEFAULT_THRESHOLD,
@@ -1360,7 +1413,7 @@ def main():
     ml_by_pubid = {}
     n_consistent = 0
     ptt_stats = defaultdict(int)
-    if args.ml_stations == 'p-traveltime' or args.out_xml_ptt:
+    if args.ml_stations == 'p-traveltime' or args.out_xml_ptt or args.drop_far_from_origin_km:
         ptt_coords = load_station_coords(args.metadata_dir)
         ptt_coords.update(load_station_coords_json(args.station_coords_json))
         tt_dist, tt_time = load_tt_table(args.tt_table, args.tt_min_n)
@@ -1448,6 +1501,11 @@ def main():
         removed_str += f"  (из них {no_ml_removed} без оценки ML)"
     print(f"  Удалено:          {removed_str}")
     print(f"  Выходной файл:    {out_path}")
+
+    if args.drop_far_from_origin_km:
+        drop_far_picks(out_path, events_full, locator, args.drop_far_from_origin_km,
+                       exclude_stations=excl, select=args.ptt_locsat_select,
+                       s_tol_select=args.ptt_select_s_tol)
 
     if args.out_xml_ptt:
         keep_ids = {p for p, ml in ml_by_pubid.items()
