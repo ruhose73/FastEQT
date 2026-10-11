@@ -156,7 +156,49 @@ def _to_sc_time(sc_core, dt):
     return sc_core.Time(dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.microsecond)
 
 
-def build_origin(sc_core, sc_datamodel, event, depth_km):
+def _sc_time_to_dt(t):
+    return datetime.datetime.strptime(t.toString("%Y-%m-%dT%H:%M:%S"), "%Y-%m-%dT%H:%M:%S")
+
+
+def load_location_codes(sc_client):
+    """
+    (net, sta) -> [(код локации, начало, конец|None), ...] из загруженного Inventory.
+    Пик ассоциатора не знает код локации, а Inventory ищет станцию по (net, sta, loc, время):
+    у станций, где в StationXML единственный код непустой (RU.ZEI — 'U1', RU.ADZR — '00', ...),
+    поиск с пустым кодом не находит станцию -> relocate() падает на ВСЁМ событии
+    ("station 'RU.ZEI' not found"). Найдено 2026-10-11: май 2024 — 11 из 16 событий бюллетеня
+    без координат теряли их именно так (раньше считалось epoch-окном).
+    """
+    inv = sc_client.Inventory.Instance().inventory()
+    codes = {}
+    if inv is None:
+        return codes
+    for i in range(inv.networkCount()):
+        net = inv.network(i)
+        for j in range(net.stationCount()):
+            sta = net.station(j)
+            for k in range(sta.sensorLocationCount()):
+                loc = sta.sensorLocation(k)
+                try:
+                    end = _sc_time_to_dt(loc.end())
+                except Exception:
+                    end = None
+                codes.setdefault((net.code(), sta.code()), []).append(
+                    (loc.code(), _sc_time_to_dt(loc.start()), end))
+    return codes
+
+
+def location_code(loc_codes, net, sta, t):
+    """Код локации станции на момент t: пустой, если такой действует (как раньше), иначе
+    первый действующий непустой; нет данных — пустой (станция не резолвится, как раньше)."""
+    active = [c for c, start, end in loc_codes.get((net, sta), [])
+              if start <= t and (end is None or t < end)]
+    if not active or "" in active:
+        return ""
+    return sorted(active)[0]
+
+
+def build_origin(sc_core, sc_datamodel, event, depth_km, loc_codes=None):
     """
     Собирает seiscomp.datamodel.Origin с прикреплёнными Pick/Arrival по каждому пику события.
     Координаты станций здесь НЕ резолвятся вручную — этим занимается
@@ -164,6 +206,8 @@ def build_origin(sc_core, sc_datamodel, event, depth_km):
     Pick.waveformID() внутри relocate() (раздел 12 плана, "Способ загрузки Inventory без
     БД — решено"). Пик со станцией, которую LOCSAT не может резолвить, отбрасывается молча
     самим relocate() — второй раз этот же фильтр здесь не дублируем.
+    loc_codes (load_location_codes) — код локации пика берётся из инвентаря; None — пустой
+    код, как до 2026-10-11.
     """
     sc_datamodel.PublicObject.SetRegistrationEnabled(True)
 
@@ -177,7 +221,8 @@ def build_origin(sc_core, sc_datamodel, event, depth_km):
     for pk in event["picks"]:
         pick = sc_datamodel.Pick.Create()
         pick.setTime(sc_datamodel.TimeQuantity(_to_sc_time(sc_core, pk["time"])))
-        pick.setWaveformID(sc_datamodel.WaveformStreamID(pk["net"], pk["sta"], "", "", ""))
+        loc = location_code(loc_codes, pk["net"], pk["sta"], pk["time"]) if loc_codes else ""
+        pick.setWaveformID(sc_datamodel.WaveformStreamID(pk["net"], pk["sta"], loc, "", ""))
         pick.setPhaseHint(sc_datamodel.Phase(pk["phase"]))
         pick.setEvaluationMode(sc_datamodel.AUTOMATIC)
         picks_keepalive.append(pick)
@@ -206,11 +251,13 @@ def _uncertainty(rq):
         return None
 
 
-def relocate_event(sc_core, sc_datamodel, sc_seismology, event, engine_name, depth_km):
+def relocate_event(sc_core, sc_datamodel, sc_seismology, event, engine_name, depth_km,
+                   loc_codes=None):
     """
     Считает сырые метрики для одного события. Не содержит порогов и не решает
     "проходит/не проходит" (раздел 1.7b плана) — только вычисление. При отсутствии решения
     converged=False, error заполнен, остальные числовые поля — None/0.
+    loc_codes — см. build_origin().
     """
     row = {f: None for f in CSV_FIELDS}
     row["event_id"] = event["pub_id"]
@@ -219,7 +266,7 @@ def relocate_event(sc_core, sc_datamodel, sc_seismology, event, engine_name, dep
     row["n_stations_used"] = 0
     row["n_arrivals_used"] = 0
 
-    origin, _keepalive = build_origin(sc_core, sc_datamodel, event, depth_km)
+    origin, _keepalive = build_origin(sc_core, sc_datamodel, event, depth_km, loc_codes)
 
     loc = sc_seismology.LocatorInterface.Create(engine_name)
     if loc is None:
@@ -304,6 +351,10 @@ def main(argv=None):
     load_result = sc_client.Inventory.Instance().load(args.inventory)
     # .load() возвращает None даже при успехе — не индикатор ошибки, см. раздел 12 плана.
     print(f"Inventory.load({args.inventory!r}) -> {load_result!r}")
+    loc_codes = load_location_codes(sc_client)
+    nonempty = sorted(f"{n}.{s}" for (n, s), v in loc_codes.items() if all(c for c, _, _ in v))
+    print(f"Станций в инвентаре: {len(loc_codes)}; только с непустым кодом локации "
+          f"(берётся из инвентаря): {nonempty}")
 
     engine_name = ENGINE_NAMES[args.engine]
 
@@ -317,7 +368,8 @@ def main(argv=None):
                 n_stations_used=0, n_arrivals_used=0,
             )
         else:
-            row = relocate_event(sc_core, sc_datamodel, sc_seismology, ev, engine_name, args.depth_km)
+            row = relocate_event(sc_core, sc_datamodel, sc_seismology, ev, engine_name, args.depth_km,
+                                 loc_codes)
         rows.append(row)
         status = "OK" if row["converged"] else f"NO SOLUTION ({row['error']})"
         print(f"  {row['event_id']}: {status}")
