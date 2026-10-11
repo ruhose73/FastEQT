@@ -667,6 +667,153 @@ def compute_event_ml_v3(pub_id, r_dict, amplitudes, sta_corr, consistent=None, *
     return ml, n, False
 
 
+# ── Отбор станций по P-годографу (--ml-stations p-traveltime, 2026-10-11) ────
+# Два случая, которые consistent не лечит (разбор май 2024, context/10.10.26.md): в событие
+# попадают чужие станции в 400–900 км, а у части своих EQT ставит S на фазу сразу за P
+# (S-P 1–2 с на 100–200 км) -> R по S-P в разы меньше, своя станция выпадает по R < 20 км,
+# σ-фильтр T0 (сам на S-P) оставляет чужих «согласованным большинством». Здесь «свои»
+# станции определяются только по P-временам (годограф P, без S), S лишь подтверждает очаг.
+# Метод «вслепую»: пики, координаты станций, годограф — без бюллетеня и места события.
+
+DEFAULT_TT_TABLE = os.path.join(_ROOT, 'core', 'data', 'tt_p_ncau2024.csv')
+PTT_TT_MIN_N   = 20                       # бины годографа с меньшим числом пар не используются
+PTT_FAR_VEL    = 8.0                      # км/с за последним бином годографа
+PTT_P_TOL      = 2.5                      # с: допуск T0 по P для «своих» станций
+PTT_MIN_IN     = 4                        # минимум своих станций
+PTT_S_TOL      = (8.0, 3.0)               # с: допуск T0 по S при уточнении точки (проход 1, 2)
+PTT_N_CONFIRM  = 2                        # минимум своих станций, чьё S-P согласно с точкой
+PTT_R_TOL_KM   = 30.0                     # |R_sp − R_точки| <= max(PTT_R_TOL_KM,
+PTT_R_TOL_FRAC = 0.3                      #                          PTT_R_TOL_FRAC · R_точки)
+PTT_DEPTH_KM   = 15.0                     # фиксированная глубина для R от точки
+PTT_GRID       = (39.0, 47.0, 36.0, 50.0, 0.1)   # lat_min, lat_max, lon_min, lon_max, шаг °
+
+
+def load_tt_table(path, min_n=PTT_TT_MIN_N):
+    """CSV core/fit_traveltime.py -> (dist_km, tp_s) по бинам с n >= min_n."""
+    tt = np.loadtxt(path, delimiter=',', skiprows=1, ndmin=2)
+    tt = tt[tt[:, 2] >= min_n]
+    return tt[:, 0], tt[:, 1]
+
+
+class PTravelTimeLocator:
+    """
+    Перебор эпицентра по сетке для P-пиков одного события. Расстояния станция–узлы сетки
+    кэшируются по станции. Станции без координат в локации не участвуют.
+    """
+
+    def __init__(self, station_coords, tt_dist, tt_time, grid=PTT_GRID,
+                 p_tol=PTT_P_TOL, min_in=PTT_MIN_IN, s_tol=PTT_S_TOL, vpvs=VP / VS,
+                 far_vel=PTT_FAR_VEL):
+        lat_min, lat_max, lon_min, lon_max, step = grid
+        lat = np.arange(lat_min, lat_max + step / 10, step)
+        lon = np.arange(lon_min, lon_max + step / 10, step)
+        self.glat, self.glon = [a.ravel() for a in np.meshgrid(lat, lon, indexing='ij')]
+        self.coords = station_coords
+        self.tt_dist, self.tt_time = tt_dist, tt_time
+        self.p_tol, self.min_in, self.s_tol = p_tol, min_in, tuple(s_tol)
+        self.vpvs, self.far_vel = vpvs, far_vel
+        self._dist = {}
+
+    def tp(self, d):
+        """tP(d): интерполяция медиан; ближе первого бина — к 0, дальше последнего — far_vel."""
+        t = np.interp(d, np.r_[0.0, self.tt_dist], np.r_[0.0, self.tt_time])
+        far = d > self.tt_dist[-1]
+        t[far] = self.tt_time[-1] + (d[far] - self.tt_dist[-1]) / self.far_vel
+        return t
+
+    def dist_grid(self, sta):
+        if sta not in self._dist:
+            la, lo = map(math.radians, self.coords[sta])
+            p1, l1 = np.radians(self.glat), np.radians(self.glon)
+            a = np.sin((p1 - la) / 2) ** 2 + np.cos(la) * np.cos(p1) * np.sin((l1 - lo) / 2) ** 2
+            self._dist[sta] = 2 * 6371.0 * np.arcsin(np.sqrt(a))
+        return self._dist[sta]
+
+    def locate(self, picks_p, picks_s=None):
+        """
+        -> (свои станции, {sta: эпиц. расстояние от точки, км}, (lat, lon)) или (None, None, None).
+        1) В каждом узле T0_i = P_i − tP(d_i); якорь — станция, у которой больше всего станций
+           с T0 в ±p_tol от её T0; узел и якорь — максимум своих (при равенстве — минимум суммы
+           |T0 − T0_якоря| по своим). Своих < min_in -> None.
+        2) При фиксированных своих — узел с минимальной дисперсией T0 по P своих и S своих;
+           S-пик берётся, только если его T0 (tS = vpvs·tP) в ±s_tol от среднего T0 по P
+           в текущем узле (два прохода, допуск сужается) — S «сразу за P» отпадает сам.
+        """
+        stas = [s for s in picks_p if s in self.coords]
+        if len(stas) < self.min_in:
+            return None, None, None
+        t_ref = min(picks_p[s] for s in stas)
+        D = np.stack([self.dist_grid(s) for s in stas], axis=1)              # G × N
+        P = np.array([(picks_p[s] - t_ref).total_seconds() for s in stas])
+        T0 = P[None, :] - self.tp(D)                                          # G × N
+        close = np.abs(T0[:, :, None] - T0[:, None, :]) <= self.p_tol         # G × N(якорь) × N
+        cnt = close.sum(axis=1)                                               # G × N
+        best = cnt.max()
+        if best < self.min_in:
+            return None, None, None
+        g_idx, a_idx = np.nonzero(cnt == best)
+        res = np.where(close[g_idx, :, a_idx],
+                       np.abs(T0[g_idx] - T0[g_idx, a_idx][:, None]), 0).sum(axis=1)
+        k = int(np.argmin(res))
+        g, a = g_idx[k], a_idx[k]
+        mask = close[g, :, a]
+        inl = {stas[i] for i in range(len(stas)) if mask[i]}
+
+        T0p = T0[:, mask]
+        t0s = {i: (picks_s[s] - t_ref).total_seconds() - self.vpvs * self.tp(D[:, i])
+               for i, s in enumerate(stas) if mask[i] and picks_s and s in picks_s}
+        g = int(np.argmin(T0p.var(axis=1)))
+        for s_tol in self.s_tol:
+            t0 = T0p[g].mean()
+            cols = [T0p] + [v[:, None] for v in t0s.values() if abs(v[g] - t0) <= s_tol]
+            g = int(np.argmin(np.hstack(cols).var(axis=1)))
+        return inl, {s: float(D[g, i]) for i, s in enumerate(stas)}, (self.glat[g], self.glon[g])
+
+
+def compute_event_ml_ptt(pub_id, picks_p, picks_s, r_dict, amplitudes, sta_corr, locator,
+                         consistent=None, exclude_stations=None, n_confirm=PTT_N_CONFIRM,
+                         r_tol_km=PTT_R_TOL_KM, r_tol_frac=PTT_R_TOL_FRAC,
+                         depth_km=PTT_DEPTH_KM, r_max_km=R_MAX_KM, **kwargs):
+    """
+    ML события по станциям, отобранным PTravelTimeLocator (--ml-stations p-traveltime).
+    consistent — станции σ-фильтра T0 (consistent_stations): по ним считается ML, если
+    локации нет или очаг не подтверждён S — то есть ровно поведение --ml-stations consistent.
+    Подтверждение: у >= n_confirm своих станций R по S-P согласно с R от точки
+    (|ΔR| <= max(r_tol_km, r_tol_frac·R_точки), R_точки — с глубиной depth_km). Тогда ML —
+    только по своим, а расходящийся R_sp заменяется R от точки (если <= r_max_km).
+    Возвращает (ml, n_stations, статус): 'confirmed' — ML по своим; 'consistent' — очаг не
+    подтверждён S, ML как в compute_event_ml_v3; 'unlocated' — локации нет, то же; 'all' —
+    подтверждён, но по своим ML не получилось (< n_min_sta с амплитудой) — ML по всем станциям.
+    """
+    excl = set(exclude_stations) if exclude_stations else set()
+    inl, epi, _ = locator.locate({s: t for s, t in picks_p.items() if s not in excl}, picks_s)
+    if inl is None:
+        ml, n, _ = compute_event_ml_v3(pub_id, r_dict, amplitudes, sta_corr, consistent=consistent,
+                                       exclude_stations=exclude_stations, **kwargs)
+        return ml, n, 'unlocated'
+    r_new, n_ok = {}, 0
+    for sta, r in r_dict.items():
+        if sta not in inl:
+            continue
+        r_pt = math.sqrt(epi[sta] ** 2 + depth_km ** 2)
+        if abs(r - r_pt) <= max(r_tol_km, r_tol_frac * r_pt):
+            r_new[sta] = r
+            n_ok += 1
+        elif r_pt <= r_max_km:
+            r_new[sta] = r_pt
+    if n_ok < n_confirm:
+        ml, n, _ = compute_event_ml_v3(pub_id, r_dict, amplitudes, sta_corr, consistent=consistent,
+                                       exclude_stations=exclude_stations, **kwargs)
+        return ml, n, 'consistent'
+    ml, n = compute_event_ml_v2(pub_id, r_new, amplitudes, sta_corr,
+                                exclude_stations=exclude_stations, **kwargs)
+    if ml is not None:
+        return ml, n, 'confirmed'
+    ml, n = compute_event_ml_v2(pub_id, r_dict, amplitudes, sta_corr,
+                                exclude_stations=exclude_stations, **kwargs)   # откат, как в v3
+    return ml, n, 'all'
+
+
 # ── Фильтрация XML ────────────────────────────────────────────────────────────
 
 def filter_xml(tree, ml_by_pubid, threshold, out_path, keep_no_ml=False):
@@ -886,10 +1033,12 @@ def main():
                         help='Множитель σ для отбраковки станций-выбросов')
     parser.add_argument('--exclude-stations', default=None,
                         help='Исключить станции из расчёта ML (через запятую, например KRNR,LSNR)')
-    parser.add_argument('--ml-stations', choices=['all', 'consistent'], default='all',
+    parser.add_argument('--ml-stations', choices=['all', 'consistent', 'p-traveltime'], default='all',
                         help='all (default) — ML по всем станциям события; consistent — только по '
                              'станциям с согласованным T0 (σ-фильтр validate_associator_v2), при '
-                             'нехватке станций — откат на all для этого события')
+                             'нехватке станций — откат на all для этого события; p-traveltime — '
+                             'станции события отбираются по P-годографу (--tt-table), очаг '
+                             'подтверждается S-P; не подтверждён — как consistent')
     parser.add_argument('--consistency-sigma', type=float, default=CONSISTENCY_SIGMA,
                         help=f'С --ml-stations consistent: множитель σ T0-фильтра (default: {CONSISTENCY_SIGMA})')
     parser.add_argument('--max-station-dist-km', type=float, default=None,
@@ -903,6 +1052,28 @@ def main():
                         help='Сводный JSON станций с координатами (coords: [lat, lon, elev]) для '
                              '--max-station-dist-km; недостающие берутся из --metadata-dir '
                              f'(default: {DEFAULT_STATION_JSON})')
+
+    # -- --ml-stations p-traveltime --
+    parser.add_argument('--tt-table', default=DEFAULT_TT_TABLE,
+                        help='Годограф первой P: CSV core/fit_traveltime.py (dist_km,tp_s,n,...)')
+    parser.add_argument('--tt-min-n', type=int, default=PTT_TT_MIN_N,
+                        help='Бины годографа с меньшим числом пар не используются')
+    parser.add_argument('--ptt-grid', default=','.join(f'{v:g}' for v in PTT_GRID),
+                        help='Сетка перебора эпицентра: lat_min,lat_max,lon_min,lon_max,шаг (°)')
+    parser.add_argument('--ptt-p-tol', type=float, default=PTT_P_TOL,
+                        help='Допуск T0 по P для «своих» станций, с')
+    parser.add_argument('--ptt-min-stations', type=int, default=PTT_MIN_IN,
+                        help='Минимум своих станций (меньше — как consistent)')
+    parser.add_argument('--ptt-s-tol', default=','.join(f'{v:g}' for v in PTT_S_TOL),
+                        help='Допуски T0 по S при уточнении точки, с (проходы через запятую)')
+    parser.add_argument('--ptt-n-confirm', type=int, default=PTT_N_CONFIRM,
+                        help='Минимум своих станций с S-P, согласным с точкой (меньше — как consistent)')
+    parser.add_argument('--ptt-r-tol-km', type=float, default=PTT_R_TOL_KM,
+                        help='Согласие R_sp с R от точки: |ΔR| <= max(этого, --ptt-r-tol-frac·R)')
+    parser.add_argument('--ptt-r-tol-frac', type=float, default=PTT_R_TOL_FRAC,
+                        help='Относительный допуск согласия R_sp с R от точки')
+    parser.add_argument('--ptt-depth-km', type=float, default=PTT_DEPTH_KM,
+                        help='Фиксированная глубина для R от точки, км')
 
     # -- фильтрация каталога --
     parser.add_argument('--ml-threshold',   type=float, default=DEFAULT_THRESHOLD,
@@ -1069,8 +1240,29 @@ def main():
           f"{args.ml_stations})...")
     ml_by_pubid = {}
     n_consistent = 0
+    ptt_stats = defaultdict(int)
+    if args.ml_stations == 'p-traveltime':
+        ptt_coords = load_station_coords(args.metadata_dir)
+        ptt_coords.update(load_station_coords_json(args.station_coords_json))
+        tt_dist, tt_time = load_tt_table(args.tt_table, args.tt_min_n)
+        locator = PTravelTimeLocator(
+            ptt_coords, tt_dist, tt_time,
+            grid=tuple(float(v) for v in args.ptt_grid.split(',')),
+            p_tol=args.ptt_p_tol, min_in=args.ptt_min_stations,
+            s_tol=[float(v) for v in args.ptt_s_tol.split(',')], vpvs=args.vp / args.vs)
+        print(f"  Годограф P: {args.tt_table} ({len(tt_dist)} бинов, до {tt_dist[-1]:.0f} км), "
+              f"узлов сетки: {len(locator.glat)}, координат станций: {len(ptt_coords)}")
     for pub_id, picks_p, picks_s, r_dict in all_events:
-        if args.ml_stations == 'consistent':
+        if args.ml_stations == 'p-traveltime':
+            cons = consistent_stations(picks_p, picks_s, args.vp, args.vs,
+                                       args.consistency_sigma, CONSISTENCY_R_MIN, excl)
+            ml, _, status = compute_event_ml_ptt(
+                pub_id, picks_p, picks_s, r_dict, amplitudes, sta_corr, locator,
+                consistent=cons, n_confirm=args.ptt_n_confirm, r_tol_km=args.ptt_r_tol_km,
+                r_tol_frac=args.ptt_r_tol_frac, depth_km=args.ptt_depth_km,
+                r_max_km=args.r_max_km, **ml_kwargs)
+            ptt_stats[status] += 1
+        elif args.ml_stations == 'consistent':
             cons = consistent_stations(picks_p, picks_s, args.vp, args.vs,
                                        args.consistency_sigma, CONSISTENCY_R_MIN, excl)
             ml, _, used = compute_event_ml_v3(pub_id, r_dict, amplitudes, sta_corr,
@@ -1082,6 +1274,10 @@ def main():
     if args.ml_stations == 'consistent':
         print(f"  ML по согласованным станциям: {n_consistent}, откат на все станции: "
               f"{len(all_events) - n_consistent}")
+    elif args.ml_stations == 'p-traveltime':
+        print(f"  P-годограф: очаг подтверждён S (ML по своим) {ptt_stats['confirmed']}, "
+              f"подтверждён, но ML по всем {ptt_stats['all']}, не подтверждён {ptt_stats['consistent']}, "
+              f"не локализован {ptt_stats['unlocated']} (последние два — как consistent)")
 
     print_distribution(list(ml_by_pubid.values()), ml_by_pubid=ml_by_pubid,
                        ml_b_log=args.ml_b_log, ml_b_lin=args.ml_b_lin, ml_c=args.ml_c)
