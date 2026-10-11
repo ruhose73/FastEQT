@@ -118,7 +118,7 @@ Dropout-слои в Keras по умолчанию **выключены** во в
 | `--date-from` / `--date-to` | `DATE_FROM` / `DATE_TO` | диапазон дат (строка, парсится через `UTCDateTime`), правая граница не включается |
 | `--estimate-uncertainty` / `--number-of-sampling` | `ESTIMATE_UNCERTAINTY` / `NUMBER_OF_SAMPLING` | MC Dropout (см. выше) |
 | `--detection-threshold` / `--p-threshold` / `--s-threshold` / `--keep-ps`(`--no-keep-ps`) / `--allow-only-s` / `--sp-limit` / `--batch-size` | одноимённые константы | пороги предиктора (см. выше) |
-| `--gap-mode {first-trace,merge}` | `first-trace` | суточный файл с разрывами: `first-trace` — старое поведение, только до первого разрыва (`process_station_v3`); `merge` — склеить куски и обработать сутки целиком (`process_station_v4`) |
+| `--gap-mode {first-trace,merge}` | `merge` (с 2026-10-11; раньше `first-trace`) | суточный файл с разрывами: `first-trace` — старое поведение, только до первого разрыва (`process_station_v3`); `merge` — склеить куски и обработать сутки целиком (`process_station_v4`) |
 | `CSV_HEADER` (не CLI) | — | список колонок выходного CSV (детекция + P/S пики, вероятности, uncertainty, SNR) |
 
 При переносе на CLI также добавлен `sys.path.insert(0, _ROOT)` перед импортом `EQTransformer` (как в `core/associator.py`) — без него `python core/detector.py --help` падал на импорте, потому что при прямом запуске в `sys.path` попадает папка `core/`, а не корень проекта; раньше это не было заметно, так как файл всегда запускали через `cpu_pipeline.py`/`gpu_pipeline.py`, которые сами делают эту вставку перед загрузкой файла через `importlib`.

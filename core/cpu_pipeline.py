@@ -166,10 +166,10 @@ def _parse_args():
                         help="MC Dropout неопределённость (медленнее — number-of-sampling проходов на сегмент)")
     parser.add_argument('--number-of-sampling', type=int, default=10)
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE)
-    parser.add_argument('--gap-mode', choices=['first-trace', 'merge'], default='first-trace',
-                        help="Суточный файл с разрывами: first-trace — как раньше, только до первого "
-                             "разрыва (process_station_v3); merge — склеить куски и обработать сутки "
-                             "целиком (process_station_v4)")
+    parser.add_argument('--gap-mode', choices=['first-trace', 'merge'], default='merge',
+                        help="Суточный файл с разрывами: merge (default с 2026-10-11) — склеить куски и "
+                             "обработать сутки целиком (process_station_v4); first-trace — старое поведение, "
+                             "только до первого разрыва (process_station_v3, теряет данные)")
     return parser.parse_args()
 
 
