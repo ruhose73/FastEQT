@@ -814,6 +814,71 @@ def compute_event_ml_ptt(pub_id, picks_p, picks_s, r_dict, amplitudes, sta_corr,
     return ml, n, 'all'
 
 
+def write_quakeml_ptt(tree, events, keep_ids, locator, out_path, exclude_stations=None,
+                      vp=VP, vs=VS, r_tol_km=PTT_R_TOL_KM, r_tol_frac=PTT_R_TOL_FRAC,
+                      depth_km=PTT_DEPTH_KM):
+    """
+    --out-xml-ptt (2026-10-11): вход для core/locator.py вместо validate_associator_v2.py
+    --out-xml-inliers. Для событий из keep_ids (прошедших порог ML), которые локализуются
+    PTravelTimeLocator: P всех своих станций + S только тех своих, чьё R по S-P согласно с
+    точкой перебора (тот же критерий, что подтверждение в compute_event_ml_ptt; S «сразу за P»
+    не подаётся). Начальное приближение origin — точка перебора и T0 по P своих. Тот же
+    publicID события — hypocenters.csv стыкуется с export_bul.py. Не локализованные события не
+    пишутся (export_bul выводит их без координат). events — parse_xml_full(tree).
+    """
+    from datetime import timedelta
+    excl = set(exclude_stations) if exclude_stations else set()
+    nets = {}
+    for wf in tree.getroot().iter(f'{{{BED_NS}}}waveformID'):
+        nets.setdefault(wf.get('stationCode', '').strip(), wf.get('networkCode', ''))
+    T = lambda n: f'{{{BED_NS}}}{n}'
+    fmt = '%Y-%m-%dT%H:%M:%S.%fZ'
+    root = ET.Element(f'{{{QUAKE_NS}}}quakeml')
+    ep = ET.SubElement(root, T('eventParameters'), publicID='smi:local/ptt-inliers')
+    n_in = n_w = n_p = n_s = n_s_drop = 0
+    for _, pub_id, _, picks_p, picks_s in events:
+        if pub_id not in keep_ids:
+            continue
+        n_in += 1
+        pp = {s: t for s, t in picks_p.items() if s not in excl}
+        inl, epi, pt = locator.locate(pp, picks_s)
+        if inl is None:
+            continue
+        t_ref = min(pp[s] for s in pp if s in locator.coords)
+        stas = sorted(inl)
+        t0s = (np.array([(pp[s] - t_ref).total_seconds() for s in stas])
+               - locator.tp(np.array([epi[s] for s in stas])))
+        t0 = t_ref + timedelta(seconds=float(t0s.mean()))
+
+        ev = ET.SubElement(ep, T('event'), publicID=pub_id)
+        orig = ET.SubElement(ev, T('origin'), publicID=f'{pub_id}/ptt')
+        ET.SubElement(ET.SubElement(orig, T('time')), T('value')).text = t0.strftime(fmt)
+        ET.SubElement(ET.SubElement(orig, T('latitude')), T('value')).text = f'{pt[0]:.3f}'
+        ET.SubElement(ET.SubElement(orig, T('longitude')), T('value')).text = f'{pt[1]:.3f}'
+        for s in stas:
+            phases = [('P', pp[s])]
+            if s in picks_s:
+                r_sp = sp_distance_km(pp[s], picks_s[s], vp, vs)
+                r_pt = math.sqrt(epi[s] ** 2 + depth_km ** 2)
+                if r_sp is not None and abs(r_sp - r_pt) <= max(r_tol_km, r_tol_frac * r_pt):
+                    phases.append(('S', picks_s[s]))
+                else:
+                    n_s_drop += 1
+            for ph, t in phases:
+                pk = ET.SubElement(ev, T('pick'), publicID=f'{pub_id}/{s}/{ph}')
+                ET.SubElement(ET.SubElement(pk, T('time')), T('value')).text = t.strftime(fmt)
+                ET.SubElement(pk, T('waveformID'), networkCode=nets.get(s, ''), stationCode=s)
+                ET.SubElement(pk, T('phaseHint')).text = ph
+                n_p += ph == 'P'
+                n_s += ph == 'S'
+        n_w += 1
+    ET.indent(root, space='  ')
+    ET.ElementTree(root).write(out_path, encoding='utf-8', xml_declaration=True)
+    print(f"QuakeML для locator.py (свои станции по P-годографу) записан: {out_path}  "
+          f"({n_w} из {n_in} событий; пиков P {n_p}, S {n_s}, S отброшено как несогласные "
+          f"с точкой {n_s_drop})")
+
+
 # ── Фильтрация XML ────────────────────────────────────────────────────────────
 
 def filter_xml(tree, ml_by_pubid, threshold, out_path, keep_no_ml=False):
@@ -1074,6 +1139,10 @@ def main():
                         help='Относительный допуск согласия R_sp с R от точки')
     parser.add_argument('--ptt-depth-km', type=float, default=PTT_DEPTH_KM,
                         help='Фиксированная глубина для R от точки, км')
+    parser.add_argument('--out-xml-ptt', default=None,
+                        help='Дополнительно записать вход для core/locator.py: события, прошедшие '
+                             'порог ML, только свои станции по P-годографу (P + согласные с точкой S), '
+                             'начальное приближение — точка перебора. Работает при любом --ml-stations')
 
     # -- фильтрация каталога --
     parser.add_argument('--ml-threshold',   type=float, default=DEFAULT_THRESHOLD,
@@ -1241,7 +1310,7 @@ def main():
     ml_by_pubid = {}
     n_consistent = 0
     ptt_stats = defaultdict(int)
-    if args.ml_stations == 'p-traveltime':
+    if args.ml_stations == 'p-traveltime' or args.out_xml_ptt:
         ptt_coords = load_station_coords(args.metadata_dir)
         ptt_coords.update(load_station_coords_json(args.station_coords_json))
         tt_dist, tt_time = load_tt_table(args.tt_table, args.tt_min_n)
@@ -1329,6 +1398,14 @@ def main():
         removed_str += f"  (из них {no_ml_removed} без оценки ML)"
     print(f"  Удалено:          {removed_str}")
     print(f"  Выходной файл:    {out_path}")
+
+    if args.out_xml_ptt:
+        keep_ids = {p for p, ml in ml_by_pubid.items()
+                    if (ml is not None and ml >= thr) or (ml is None and args.keep_no_ml)}
+        write_quakeml_ptt(tree, events_full, keep_ids, locator, args.out_xml_ptt,
+                          exclude_stations=excl, vp=args.vp, vs=args.vs,
+                          r_tol_km=args.ptt_r_tol_km, r_tol_frac=args.ptt_r_tol_frac,
+                          depth_km=args.ptt_depth_km)
 
 
 if __name__ == '__main__':
