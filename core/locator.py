@@ -188,6 +188,14 @@ def load_location_codes(sc_client):
     return codes
 
 
+SKIPPED_PICKS = {}   # (net, sta) -> число пиков, пропущенных build_origin(): станции нет в инвентаре
+
+
+def in_inventory(loc_codes, net, sta, t):
+    """Есть ли у станции действующая на момент t локация в инвентаре."""
+    return any(start <= t and (end is None or t < end) for _, start, end in loc_codes.get((net, sta), []))
+
+
 def location_code(loc_codes, net, sta, t):
     """Код локации станции на момент t: пустой, если такой действует (как раньше), иначе
     первый действующий непустой; нет данных — пустой (станция не резолвится, как раньше)."""
@@ -206,8 +214,10 @@ def build_origin(sc_core, sc_datamodel, event, depth_km, loc_codes=None):
     Pick.waveformID() внутри relocate() (раздел 12 плана, "Способ загрузки Inventory без
     БД — решено"). Пик со станцией, которую LOCSAT не может резолвить, отбрасывается молча
     самим relocate() — второй раз этот же фильтр здесь не дублируем.
-    loc_codes (load_location_codes) — код локации пика берётся из инвентаря; None — пустой
-    код, как до 2026-10-11.
+    loc_codes (load_location_codes) — код локации пика берётся из инвентаря, а пики станций без
+    действующей локации в инвентаре пропускаются (счётчик SKIPPED_PICKS): иначе relocate() падает
+    на всём событии "station ... not found" (2025: KGUR/MRMR нет в инвентаре 2024, у N0.TRKR не было
+    каналов). None — пустой код и без пропуска, как до 2026-10-11.
     """
     sc_datamodel.PublicObject.SetRegistrationEnabled(True)
 
@@ -219,6 +229,10 @@ def build_origin(sc_core, sc_datamodel, event, depth_km, loc_codes=None):
 
     picks_keepalive = []  # держим ссылки — Python GC иначе убивает Pick до relocate()
     for pk in event["picks"]:
+        if loc_codes is not None and not in_inventory(loc_codes, pk["net"], pk["sta"], pk["time"]):
+            key = (pk["net"], pk["sta"])
+            SKIPPED_PICKS[key] = SKIPPED_PICKS.get(key, 0) + 1
+            continue
         pick = sc_datamodel.Pick.Create()
         pick.setTime(sc_datamodel.TimeQuantity(_to_sc_time(sc_core, pk["time"])))
         loc = location_code(loc_codes, pk["net"], pk["sta"], pk["time"]) if loc_codes else ""
@@ -383,6 +397,9 @@ def main(argv=None):
         writer.writerows(rows)
 
     n_ok = sum(1 for r in rows if r["converged"])
+    if SKIPPED_PICKS:
+        print("\nПропущены пики станций без действующей локации в инвентаре (событие считается без них): "
+              + ", ".join(f"{n}.{s} {c}" for (n, s), c in sorted(SKIPPED_PICKS.items())))
     print(f"\nWrote {len(rows)} rows to {args.out} "
           f"({n_ok} converged, {len(rows) - n_ok} no solution/skipped)")
 
