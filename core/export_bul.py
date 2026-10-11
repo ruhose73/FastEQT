@@ -544,6 +544,37 @@ def fmt_pick_line_v2(sta, phase, t, snr, amp_nm, mag_val, arr_id, dist_deg=None,
     return ''.join(c).rstrip()
 
 
+def load_ml_from_xml(path):
+    """
+    --ml-from-xml (2026-10-11): ML события и станций, записанные core/ml_filter_v5.py --write-ml
+    (<magnitude type=ML> и <stationMagnitude type=ML> в событии QuakeML) ->
+    {pub_id: (ml, n_stations, {станция: ML})}. Это та же ML, по которой ml_filter_v5 отбирал
+    события (consistent / p-traveltime), — в отличие от пересчёта v2.compute_ml() по --amps,
+    который берёт все станции события и другие пороги отбраковки (Rule 14 CLAUDE.md).
+    """
+    import xml.etree.ElementTree as _ET
+    ns = '{http://quakeml.org/xmlns/bed/1.2}'
+    out = {}
+    for ev in _ET.parse(path).getroot().iter(f'{ns}event'):
+        ml, n = None, 0
+        for mag in ev.findall(f'{ns}magnitude'):
+            if (mag.findtext(f'{ns}type') or '').strip() == 'ML':
+                ml = float(mag.findtext(f'{ns}mag/{ns}value'))
+                n = int(mag.findtext(f'{ns}stationCount') or 0)
+                break
+        if ml is None:
+            continue
+        per_sta = {}
+        for sm in ev.findall(f'{ns}stationMagnitude'):
+            if (sm.findtext(f'{ns}type') or '').strip() != 'ML':
+                continue
+            wf = sm.find(f'{ns}waveformID')
+            if wf is not None:
+                per_sta[wf.get('stationCode', '').strip()] = float(sm.findtext(f'{ns}mag/{ns}value'))
+        out[ev.get('publicID', '')] = (ml, n, per_sta)
+    return out
+
+
 def write_bul(processed, region_map, amplitudes, p_snr_dict, s_snr_dict, out_path,
               station_coords=None):
     orig_id = 0
@@ -614,6 +645,11 @@ def main():
     parser.add_argument('--assoc',   default=DEFAULT_ASSOC)
     parser.add_argument('--amps',    default=DEFAULT_AMPS)
     parser.add_argument('--no-amps', action='store_true')
+    parser.add_argument('--ml-from-xml', action='store_true',
+                        help="ML события (блок Magnitude) и ML станций (строки S-фаз) брать из --assoc — "
+                             "их пишет core/ml_filter_v5.py --write-ml (та же ML, по которой отбирались "
+                             "события), вместо пересчёта по --amps. Колонку амплитуды по-прежнему "
+                             "заполняет --amps (если не --no-amps). Default: выкл.")
     parser.add_argument('--sta-corrections', default=None)
     parser.add_argument('--prob-dir', default=DEFAULT_PROB_DIR)
     parser.add_argument('--metadata-dir', default=DEFAULT_METADATA_DIR)
@@ -705,6 +741,15 @@ def main():
         print(f"Исключено станций (дальше {max_dist:.0f} км): {len(excluded_stations)}  "
               f"[{', '.join(sorted(excluded_stations))}]")
     print(f"Событий после T0/sigma-фильтра: {len(processed)}")
+
+    if args.ml_from_xml:
+        ml_xml = load_ml_from_xml(args.assoc)
+        n_ml = 0
+        for ae in processed:
+            ml, n, per_sta = ml_xml.get(ae['pub_id'], (None, 0, {}))
+            ae['ml'], ae['ml_n'], ae['ml_per_sta'] = ml, n, per_sta
+            n_ml += ml is not None
+        print(f"ML из XML (--ml-from-xml): {n_ml} событий из {len(processed)}  ({args.assoc})")
 
     if args.locator_mode != 'off':
         if station_coords is None:   # для Dist/EvAz в строках фаз

@@ -853,6 +853,121 @@ def compute_event_ml_ptt(pub_id, picks_p, picks_s, r_dict, amplitudes, sta_corr,
     return ml, n, 'all'
 
 
+# ── ML по станциям для записи в XML (--write-ml, 2026-10-11) ─────────────────
+# compute_event_ml_v2/v3/ptt возвращают только ML события. Для бюллетеня нужны и ML станций, вошедших
+# в среднее. Функции ниже повторяют тот же выбор станций и R (Rule 13 — старые не меняются); main()
+# сверяет их ML события с основной и считает расхождения (должно быть 0).
+
+def _ml_v2_detail(pub_id, r_dict, amplitudes, sta_corr,
+                  amp_scale=AMP_SCALE_NM, r_min=R_MIN_KM,
+                  a_nm_min=A_NM_MIN, a_max_nm=A_MAX_NM,
+                  ml_b_log=ML_B_LOG, ml_b_lin=ML_B_LIN, ml_c=ML_C,
+                  n_min_sta=N_MIN_STA, outlier_sigma=ML_OUTLIER_SIGMA,
+                  exclude_stations=None):
+    """Как compute_event_ml_v2(), но возвращает (ml, n, {станция: ML станции}) по станциям, вошедшим в среднее."""
+    entries = _ml_entries(pub_id, r_dict, amplitudes, sta_corr,
+                          amp_scale, r_min, a_nm_min, a_max_nm,
+                          ml_b_log, ml_b_lin, ml_c, exclude_stations)
+    if len(entries) < n_min_sta:
+        return None, 0, {}
+    entries = _filter_by_sigma_v2(entries, n_min_sta, outlier_sigma)
+    if not entries:
+        return None, 0, {}
+    return float(np.mean([e[3] for e in entries])), len(entries), {e[0]: e[3] for e in entries}
+
+
+def compute_event_ml_detail(pub_id, picks_p, picks_s, r_dict, amplitudes, sta_corr, mode,
+                            consistent=None, locator=None, exclude_stations=None,
+                            n_confirm=PTT_N_CONFIRM, r_tol_km=PTT_R_TOL_KM,
+                            r_tol_frac=PTT_R_TOL_FRAC, depth_km=PTT_DEPTH_KM,
+                            r_max_km=R_MAX_KM, **kwargs):
+    """
+    (ml, n, {станция: ML}) — тот же выбор станций и R, что compute_event_ml_v2 (mode 'all'),
+    compute_event_ml_v3 ('consistent') и compute_event_ml_ptt ('p-traveltime').
+    """
+    kw = dict(kwargs, exclude_stations=exclude_stations)
+
+    def v3(cons):
+        if cons:
+            res = _ml_v2_detail(pub_id, {s: r for s, r in r_dict.items() if s in cons},
+                                amplitudes, sta_corr, **kw)
+            if res[0] is not None:
+                return res
+        return _ml_v2_detail(pub_id, r_dict, amplitudes, sta_corr, **kw)
+
+    if mode == 'all':
+        return _ml_v2_detail(pub_id, r_dict, amplitudes, sta_corr, **kw)
+    if mode == 'consistent':
+        return v3(consistent)
+    excl = set(exclude_stations) if exclude_stations else set()
+    inl, epi, _ = locator.locate({s: t for s, t in picks_p.items() if s not in excl}, picks_s)
+    if inl is None:
+        return v3(consistent)
+    r_new, n_ok = {}, 0
+    for sta, r in r_dict.items():
+        if sta not in inl:
+            continue
+        r_pt = math.sqrt(epi[sta] ** 2 + depth_km ** 2)
+        if abs(r - r_pt) <= max(r_tol_km, r_tol_frac * r_pt):
+            r_new[sta] = r
+            n_ok += 1
+        elif r_pt <= r_max_km:
+            r_new[sta] = r_pt
+    if n_ok < n_confirm:
+        return v3(consistent)
+    res = _ml_v2_detail(pub_id, r_new, amplitudes, sta_corr, **kw)
+    if res[0] is not None:
+        return res
+    return _ml_v2_detail(pub_id, r_dict, amplitudes, sta_corr, **kw)
+
+
+def write_ml_to_xml(out_path, ml_detail):
+    """
+    --write-ml: в выходной XML для каждого события из ml_detail ({pub_id: (ml, n, {sta: ML})})
+    добавить <magnitude> (ML события, type ML, stationCount) и <stationMagnitude> на каждую станцию,
+    вошедшую в среднее и оставшуюся в событии (после --drop-far-from-origin-km). Вставляются перед
+    первым <pick>. core/export_bul.py --ml-from-xml пишет их в бюллетень вместо собственного пересчёта.
+    """
+    tree = ET.parse(out_path)
+    ns = BED_NS
+    T = lambda n: f'{{{ns}}}{n}'
+    n_ev = n_sta = 0
+    for ev in tree.getroot().iter(T('event')):
+        pub_id = ev.get('publicID', '')
+        det = ml_detail.get(pub_id)
+        if not det or det[0] is None:
+            continue
+        ml, n, per_sta = det
+        nets = {}
+        for pk in ev.findall(T('pick')):
+            wf = pk.find(T('waveformID'))
+            if wf is not None:
+                nets.setdefault(wf.get('stationCode', '').strip(), wf.get('networkCode', ''))
+        children = list(ev)
+        pos = next((i for i, c in enumerate(children) if c.tag == T('pick')), len(children))
+        new = []
+        mag = ET.Element(T('magnitude'), publicID=f'{pub_id}/ml')
+        ET.SubElement(ET.SubElement(mag, T('mag')), T('value')).text = f'{ml:.3f}'
+        ET.SubElement(mag, T('type')).text = 'ML'
+        ET.SubElement(mag, T('stationCount')).text = str(n)
+        ET.SubElement(mag, T('methodID')).text = 'smi:local/ml_filter_v5'
+        new.append(mag)
+        for sta in sorted(per_sta):
+            if sta not in nets:
+                continue
+            sm = ET.Element(T('stationMagnitude'), publicID=f'{pub_id}/ml/{sta}')
+            ET.SubElement(ET.SubElement(sm, T('mag')), T('value')).text = f'{per_sta[sta]:.3f}'
+            ET.SubElement(sm, T('type')).text = 'ML'
+            ET.SubElement(sm, T('waveformID'), networkCode=nets[sta], stationCode=sta)
+            new.append(sm)
+            n_sta += 1
+        for i, el in enumerate(new):
+            ev.insert(pos + i, el)
+        n_ev += 1
+    tree.write(out_path, encoding='unicode', xml_declaration=True)
+    print(f"  ML записана в XML: {n_ev} событий, {n_sta} станционных магнитуд ({out_path})")
+
+
 def write_quakeml_ptt(tree, events, keep_ids, locator, out_path, exclude_stations=None,
                       vp=VP, vs=VS, r_tol_km=PTT_R_TOL_KM, r_tol_frac=PTT_R_TOL_FRAC,
                       depth_km=PTT_DEPTH_KM, select='ps', s_tol_select=PTT_SELECT_S_TOL):
@@ -1241,6 +1356,10 @@ def main():
                              'по своим P + согласным S; p — только по P, как в ML')
     parser.add_argument('--ptt-select-s-tol', type=float, default=PTT_SELECT_S_TOL,
                         help='С --ptt-locsat-select ps: допуск S к T0 якоря при выборе узла, с')
+    parser.add_argument('--write-ml', action='store_true', default=False,
+                        help='Записать в выходной XML ML события (<magnitude>) и ML станций, вошедших в '
+                             'среднее (<stationMagnitude>) — для core/export_bul.py --ml-from-xml. '
+                             'Default: выкл. (XML как раньше, без магнитуд)')
     parser.add_argument('--drop-far-from-origin-km', type=float, default=None,
                         help='Убрать из выходного XML пики станций дальше этого расстояния от очага '
                              'события, найденного перебором по P-годографу (точка как в --out-xml-ptt; '
@@ -1424,7 +1543,9 @@ def main():
             s_tol=[float(v) for v in args.ptt_s_tol.split(',')], vpvs=args.vp / args.vs)
         print(f"  Годограф P: {args.tt_table} ({len(tt_dist)} бинов, до {tt_dist[-1]:.0f} км), "
               f"узлов сетки: {len(locator.glat)}, координат станций: {len(ptt_coords)}")
+    ml_detail, n_detail_mismatch = {}, 0
     for pub_id, picks_p, picks_s, r_dict in all_events:
+        cons = None
         if args.ml_stations == 'p-traveltime':
             cons = consistent_stations(picks_p, picks_s, args.vp, args.vs,
                                        args.consistency_sigma, CONSISTENCY_R_MIN, excl)
@@ -1443,6 +1564,19 @@ def main():
         else:
             ml, _ = compute_event_ml_v2(pub_id, r_dict, amplitudes, sta_corr, **ml_kwargs)
         ml_by_pubid[pub_id] = ml
+        if args.write_ml and ml is not None and ml >= args.ml_threshold:
+            det = compute_event_ml_detail(
+                pub_id, picks_p, picks_s, r_dict, amplitudes, sta_corr, args.ml_stations,
+                consistent=cons, locator=locator if args.ml_stations == 'p-traveltime' else None,
+                n_confirm=args.ptt_n_confirm, r_tol_km=args.ptt_r_tol_km,
+                r_tol_frac=args.ptt_r_tol_frac, depth_km=args.ptt_depth_km,
+                r_max_km=args.r_max_km, **ml_kwargs)
+            if det[0] is None or abs(det[0] - ml) > 1e-9:
+                n_detail_mismatch += 1
+            ml_detail[pub_id] = det
+    if args.write_ml:
+        print(f"  --write-ml: ML по станциям для {len(ml_detail)} событий; расхождений с основной ML: "
+              f"{n_detail_mismatch} (должно быть 0)")
     if args.ml_stations == 'consistent':
         print(f"  ML по согласованным станциям: {n_consistent}, откат на все станции: "
               f"{len(all_events) - n_consistent}")
@@ -1506,6 +1640,9 @@ def main():
         drop_far_picks(out_path, events_full, locator, args.drop_far_from_origin_km,
                        exclude_stations=excl, select=args.ptt_locsat_select,
                        s_tol_select=args.ptt_select_s_tol)
+
+    if args.write_ml:
+        write_ml_to_xml(out_path, ml_detail)
 
     if args.out_xml_ptt:
         keep_ids = {p for p, ml in ml_by_pubid.items()
