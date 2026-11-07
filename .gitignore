@@ -7,6 +7,11 @@ EQTransformer.egg-info/
 # workspace/ — структура (input/output на стадию) закоммичена, содержимое нет
 workspace/*/input/*
 workspace/*/output/*
+workspace/*/tables/*
+workspace/locator/*
+workspace/associator/*
+workspace/2025-results/*
+workspace/results_q1_2025/*
 !workspace/*/input/.gitkeep
 !workspace/*/output/.gitkeep
 
@@ -15,6 +20,7 @@ workspace/*/output/*
 
 time_tracks.pkl
 CLAUDE.md
+AGENTS.md
 *.xlsx
 
 # Старые пути данных, предшествующие workspace/ — на диске у части
@@ -45,3 +51,6 @@ phase_dataset
 /json-25
 /metadata-25
 /memory-25
+/speed_models
+/thesis
+/2610
